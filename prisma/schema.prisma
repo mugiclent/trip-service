@@ -1,0 +1,324 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum OrgType {
+  company
+  cooperative
+  coop_member
+}
+
+enum OrgStatus {
+  active
+  suspended
+}
+
+enum StaffUserStatus {
+  active
+  suspended
+  deleted
+}
+
+enum TripSeriesStatus {
+  active
+  paused
+  cancelled
+}
+
+enum TripStatus {
+  scheduled
+  active
+  completed
+  cancelled
+}
+
+enum TicketStatus {
+  initiated
+  payment_pending
+  confirmed
+  failed
+  expired
+  cancelled
+}
+
+enum PaymentMethod {
+  cash
+  wallet
+  mtn
+  airtel
+}
+
+// ---------------------------------------------------------------------------
+// Local org cache — synced from user service via RabbitMQ
+// ---------------------------------------------------------------------------
+
+model Organisation {
+  id                   String    @id @default(uuid())
+  name                 String    @db.VarChar(255)
+  slug                 String    @unique @db.VarChar(255)
+  org_type             OrgType
+  logo_path            String?
+  story                String?   @db.Text
+  tin                  String    @unique @db.VarChar(9)
+  status               OrgStatus
+  cancellation_allowed Boolean   @default(false)
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
+
+  buses       Bus[]
+  routes      Route[]
+  trip_series TripSeries[]
+  trips       Trip[]
+  tickets     Ticket[]
+  staff_users StaffUser[]
+
+  @@map("organisations")
+}
+
+// ---------------------------------------------------------------------------
+// Local staff user cache — synced from user service via RabbitMQ
+// ---------------------------------------------------------------------------
+
+model StaffUser {
+  id          String          @id @default(uuid())
+  first_name  String          @db.VarChar(255)
+  last_name   String          @db.VarChar(255)
+  avatar_path String?
+  org_id      String?
+  roles       String[]
+  status      StaffUserStatus
+  created_at  DateTime        @default(now())
+  updated_at  DateTime        @updatedAt
+
+  org             Organisation? @relation(fields: [org_id], references: [id])
+  trip_series     TripSeries[]
+  trips           Trip[]
+  created_tickets Ticket[]
+
+  @@index([org_id])
+  @@map("staff_users")
+}
+
+// ---------------------------------------------------------------------------
+// Stops
+// ---------------------------------------------------------------------------
+
+model Stop {
+  id         String   @id @default(uuid())
+  name       String   @db.VarChar(255)
+  lat        Decimal  @db.Decimal(10, 7)
+  lng        Decimal  @db.Decimal(10, 7)
+  city       String?  @db.VarChar(255)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  route_stops        RouteStop[]
+  origin_routes      Route[]     @relation("OriginStop")
+  destination_routes Route[]     @relation("DestinationStop")
+  boarding_prices    Price[]     @relation("BoardingPrice")
+  alighting_prices   Price[]     @relation("AlightingPrice")
+  boarding_tickets   Ticket[]    @relation("BoardingTicket")
+  alighting_tickets  Ticket[]    @relation("AlightingTicket")
+
+  @@map("stops")
+}
+
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
+
+model Route {
+  id                  String   @id @default(uuid())
+  org_id              String
+  name                String   @db.VarChar(255)
+  slug                String   @unique @db.VarChar(255)
+  origin_stop_id      String
+  destination_stop_id String
+  is_active           Boolean  @default(true)
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
+  org              Organisation @relation(fields: [org_id], references: [id])
+  origin_stop      Stop         @relation("OriginStop", fields: [origin_stop_id], references: [id])
+  destination_stop Stop         @relation("DestinationStop", fields: [destination_stop_id], references: [id])
+  route_stops      RouteStop[]
+  trip_series      TripSeries[]
+  trips            Trip[]
+
+  @@index([org_id])
+  @@map("routes")
+}
+
+model RouteStop {
+  id         String   @id @default(uuid())
+  route_id   String
+  stop_id    String
+  order      Int
+  created_at DateTime @default(now())
+
+  route Route @relation(fields: [route_id], references: [id], onDelete: Cascade)
+  stop  Stop  @relation(fields: [stop_id], references: [id])
+
+  @@unique([route_id, stop_id])
+  @@unique([route_id, order])
+  @@map("route_stops")
+}
+
+// ---------------------------------------------------------------------------
+// Prices (RURA official tariffs)
+// ---------------------------------------------------------------------------
+
+model Price {
+  id                String   @id @default(uuid())
+  boarding_stop_id  String
+  alighting_stop_id String
+  amount            Int
+  currency          String   @default("RWF") @db.VarChar(3)
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  boarding_stop  Stop @relation("BoardingPrice", fields: [boarding_stop_id], references: [id])
+  alighting_stop Stop @relation("AlightingPrice", fields: [alighting_stop_id], references: [id])
+
+  @@unique([boarding_stop_id, alighting_stop_id])
+  @@index([boarding_stop_id, alighting_stop_id])
+  @@map("prices")
+}
+
+// ---------------------------------------------------------------------------
+// Buses
+// ---------------------------------------------------------------------------
+
+model Bus {
+  id           String   @id @default(uuid())
+  org_id       String
+  plate        String   @unique @db.VarChar(20)
+  type         String   @db.VarChar(100)
+  total_seats  Int
+  is_active    Boolean  @default(true)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  org         Organisation @relation(fields: [org_id], references: [id])
+  trip_series TripSeries[]
+  trips       Trip[]
+
+  @@index([org_id])
+  @@map("buses")
+}
+
+// ---------------------------------------------------------------------------
+// Trip series (recurring trip definitions)
+// ---------------------------------------------------------------------------
+
+model TripSeries {
+  id                String           @id @default(uuid())
+  org_id            String
+  route_id          String
+  bus_id            String?
+  driver_id         String?
+  departure_time    String           @db.VarChar(5)
+  frequency_minutes Int?
+  repeat_daily      Boolean          @default(false)
+  starts_on         DateTime         @db.Date
+  ends_on           DateTime?        @db.Date
+  total_seats       Int
+  is_express        Boolean          @default(false)
+  status            TripSeriesStatus @default(active)
+  created_at        DateTime         @default(now())
+  updated_at        DateTime         @updatedAt
+
+  org    Organisation @relation(fields: [org_id], references: [id])
+  route  Route        @relation(fields: [route_id], references: [id])
+  bus    Bus?         @relation(fields: [bus_id], references: [id])
+  driver StaffUser?   @relation(fields: [driver_id], references: [id])
+  trips  Trip[]
+
+  @@index([org_id])
+  @@map("trip_series")
+}
+
+// ---------------------------------------------------------------------------
+// Trips (actual bus departures)
+// ---------------------------------------------------------------------------
+
+model Trip {
+  id                   String     @id @default(uuid())
+  org_id               String
+  route_id             String
+  bus_id               String?
+  driver_id            String?
+  series_id            String?
+  departure_at         DateTime
+  arrival_at           DateTime?
+  duration_minutes     Int?
+  total_seats          Int
+  available_seats      Int
+  status               TripStatus @default(scheduled)
+  cancellation_allowed Boolean    @default(false)
+  is_express           Boolean    @default(false)
+  created_at           DateTime   @default(now())
+  updated_at           DateTime   @updatedAt
+
+  org     Organisation @relation(fields: [org_id], references: [id])
+  route   Route        @relation(fields: [route_id], references: [id])
+  bus     Bus?         @relation(fields: [bus_id], references: [id])
+  driver  StaffUser?   @relation(fields: [driver_id], references: [id])
+  series  TripSeries?  @relation(fields: [series_id], references: [id])
+  tickets Ticket[]
+
+  @@index([departure_at, status])
+  @@index([route_id, departure_at])
+  @@index([org_id, status])
+  @@index([series_id])
+  @@map("trips")
+}
+
+// ---------------------------------------------------------------------------
+// Tickets
+// ---------------------------------------------------------------------------
+
+model Ticket {
+  id                String        @id @default(uuid())
+  org_id            String
+  trip_id           String
+  user_id           String?
+  passenger_name    String        @db.VarChar(255)
+  passenger_phone   String?       @db.VarChar(20)
+  boarding_stop_id  String
+  alighting_stop_id String
+  seats_count       Int           @default(1)
+  ticket_price      Int
+  payment_method    PaymentMethod
+  payment_ref       String        @unique @default(uuid())
+  status            TicketStatus  @default(initiated)
+  expires_at        DateTime
+  confirmed_at      DateTime?
+  cancelled_at      DateTime?
+  cancellation_reason String?     @db.Text
+  validated_at      DateTime?
+  created_by        String?
+  created_at        DateTime      @default(now())
+  updated_at        DateTime      @updatedAt
+
+  org            Organisation @relation(fields: [org_id], references: [id])
+  trip           Trip         @relation(fields: [trip_id], references: [id])
+  boarding_stop  Stop         @relation("BoardingTicket", fields: [boarding_stop_id], references: [id])
+  alighting_stop Stop         @relation("AlightingTicket", fields: [alighting_stop_id], references: [id])
+  dispatcher     StaffUser?   @relation(fields: [created_by], references: [id])
+
+  @@index([trip_id, status])
+  @@index([user_id])
+  @@index([payment_ref])
+  @@index([org_id, status])
+  @@index([status, expires_at])
+  @@map("tickets")
+}

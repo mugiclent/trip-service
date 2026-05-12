@@ -1,0 +1,21 @@
+services:
+  trip-svc:
+    image: ${DOCKER_USERNAME}/trip-svc:${IMAGE_TAG:-latest}
+    container_name: trip-svc
+    restart: unless-stopped
+    environment:
+      NODE_ENV:          ${NODE_ENV}
+      PORT:              ${PORT}
+      DB_USER:           ${DB_USER}
+      DB_PASSWORD:       ${DB_PASSWORD}
+      DB_NAME:           ${DB_NAME}
+      REDIS_PASSWORD:    ${REDIS_PASSWORD}
+      RABBITMQ_USER:     ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      PAYMENT_SERVICE_URL: ${PAYMENT_SERVICE_URL:-http://payment-svc:8098}
+    networks:
+      - katisha-net
+
+networks:
+  katisha-net:
+    external: true

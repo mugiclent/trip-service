@@ -5,7 +5,6 @@ import { AppError } from '../utils/AppError.js';
 import { publishPaymentRequested, publishRefundRequested, publishAudit } from '../utils/publishers.js';
 import { seatHoldQueue } from '../loaders/bullmq.js';
 import { getRedisClient } from '../loaders/redis.js';
-import { config } from '../config/index.js';
 import { detectNetwork } from '../utils/phone.js';
 import { buildAbilityFromRules, getScopeFor } from '../utils/ability.js';
 import type { AuthenticatedUser } from '../utils/ability.js';
@@ -70,20 +69,6 @@ export const bookWalletTicket = async (
   },
 ) => {
   const { trip, price } = await validateBookingRequest(data);
-
-  const totalAmount = price.amount * data.seats_count;
-
-  const balanceRes = await fetch(`${config.paymentServiceUrl}/internal/wallet/balance/${user.id}`);
-  if (balanceRes.ok) {
-    const balanceData = (await balanceRes.json()) as { balance: number };
-    if (balanceData.balance < totalAmount) {
-      throw new AppError('INSUFFICIENT_WALLET_BALANCE', 402, {
-        available: balanceData.balance,
-        required: totalAmount,
-        shortfall: totalAmount - balanceData.balance,
-      });
-    }
-  }
 
   const ticket = await prisma.$transaction(async (tx) => {
     const freshTrip = await tx.trip.findFirst({

@@ -22,7 +22,6 @@ const schema = Joi.object({
   RABBITMQ_HOST: Joi.string().default('rabbitmq'),
   RABBITMQ_PORT: Joi.number().default(5672),
 
-  PAYMENT_SERVICE_URL: Joi.string().uri().default('http://payment-svc:8098'),
 });
 
 const { error, value } = schema.validate(process.env, { allowUnknown: true });
@@ -48,5 +47,4 @@ export const env = value as {
   RABBITMQ_PASSWORD: string;
   RABBITMQ_HOST: string;
   RABBITMQ_PORT: number;
-  PAYMENT_SERVICE_URL: string;
 };

@@ -12,7 +12,6 @@ services:
       REDIS_PASSWORD:    ${REDIS_PASSWORD}
       RABBITMQ_USER:     ${RABBITMQ_USER}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
-      PAYMENT_SERVICE_URL: ${PAYMENT_SERVICE_URL:-http://payment-svc:8098}
     networks:
       - katisha-net
 

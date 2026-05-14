@@ -19,5 +19,4 @@ export const config = {
     url: `amqp://${env.RABBITMQ_USER}:${env.RABBITMQ_PASSWORD}@${env.RABBITMQ_HOST}:${env.RABBITMQ_PORT}`,
   },
 
-  paymentServiceUrl: env.PAYMENT_SERVICE_URL,
 } as const;

@@ -100,7 +100,7 @@ jobs:
               --network katisha-net \
               -e DIRECT_DATABASE_URL="postgresql://trip_svc:${DB_PASSWORD}@db:5432/katisha_trips" \
               ${{ secrets.DOCKER_USERNAME }}/trip-svc:${{ needs.build-and-push.outputs.image_tag }} \
-              npx prisma migrate resolve --applied 20260511000000_init || true
+              npx prisma migrate resolve --applied 20260512004414_init || true
 
             docker run --rm \
               --network katisha-net \

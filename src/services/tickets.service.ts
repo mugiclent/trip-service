@@ -6,7 +6,7 @@ import { publishPaymentRequested, publishRefundRequested, publishAudit } from '.
 import { seatHoldQueue } from '../loaders/bullmq.js';
 import { getRedisClient } from '../loaders/redis.js';
 import { detectNetwork } from '../utils/phone.js';
-import { buildAbilityFromRules, getScopeFor } from '../utils/ability.js';
+import { buildAbilityFromRules, getScopeFor, accessibleWhere } from '../utils/ability.js';
 import type { AuthenticatedUser } from '../utils/ability.js';
 
 const WALLET_TTL_MS = 30_000;
@@ -392,19 +392,23 @@ export const listTickets = async (
   filters: { org_id?: string; trip_id?: string; route_id?: string; status?: string; payment_method?: string; from?: string; to?: string; page?: number; limit?: number },
 ) => {
   const ability = buildAbilityFromRules(user.rules);
-  const scope = getScopeFor(ability, 'read', 'Ticket');
-  const scopedOrgId = scope === 'platform' ? filters.org_id : user.org_id;
+  // Boundary from the caller's Ticket rule conditions: passenger → own (user_id),
+  // staff → org, platform → all. Only platform may narrow to an arbitrary org.
+  const isPlatform = getScopeFor(ability, 'read', 'Ticket') === 'platform';
 
   const page = filters.page ?? 1;
   const limit = filters.limit ?? 20;
   const skip = (page - 1) * limit;
 
   const where: Prisma.TicketWhereInput = {
-    ...(scopedOrgId ? { org_id: scopedOrgId } : {}),
-    ...(filters.trip_id ? { trip_id: filters.trip_id } : {}),
-    ...(filters.status ? { status: filters.status as never } : {}),
-    ...(filters.payment_method ? { payment_method: filters.payment_method as never } : {}),
-    ...(filters.from || filters.to ? { created_at: { ...(filters.from ? { gte: new Date(filters.from) } : {}), ...(filters.to ? { lte: new Date(filters.to) } : {}) } } : {}),
+    AND: [
+      accessibleWhere(ability, 'read', 'Ticket'),
+      ...(isPlatform && filters.org_id ? [{ org_id: filters.org_id }] : []),
+      ...(filters.trip_id ? [{ trip_id: filters.trip_id }] : []),
+      ...(filters.status ? [{ status: filters.status as never }] : []),
+      ...(filters.payment_method ? [{ payment_method: filters.payment_method as never }] : []),
+      ...(filters.from || filters.to ? [{ created_at: { ...(filters.from ? { gte: new Date(filters.from) } : {}), ...(filters.to ? { lte: new Date(filters.to) } : {}) } }] : []),
+    ],
   };
 
   const [tickets, total] = await Promise.all([

@@ -1,5 +1,7 @@
 import { createMongoAbility } from '@casl/ability';
 import type { MongoAbility, RawRuleOf } from '@casl/ability';
+import { accessibleBy } from '@casl/prisma';
+import { AppError } from './AppError.js';
 
 export type Actions =
   | 'manage' | 'read' | 'create' | 'update' | 'delete'
@@ -41,6 +43,30 @@ export const getScopeFor = (
   const rules = ability.rulesFor(action, subject as any);
   if (rules.some((r) => !r.conditions)) return 'platform';
   if (rules.some((r) => r.conditions && 'org_id' in (r.conditions as object))) return 'org';
-  if (rules.some((r) => r.conditions && 'id' in (r.conditions as object))) return 'own';
+  if (rules.some((r) => r.conditions && (('id' in (r.conditions as object)) || ('user_id' in (r.conditions as object))))) return 'own';
   return null;
+};
+
+/**
+ * Prisma `where` filter encoding the caller's own/org/platform boundary for a
+ * subject, derived from their baked rule conditions — use on list endpoints so
+ * scoping is never hand-written:
+ *   prisma.trip.findMany({ where: { AND: [ accessibleWhere(ability,'read','Trip'), ...filters ] } })
+ *
+ * platform → {} (all); org → { OR:[{org_id}] }; own → { OR:[{user_id}] }.
+ * If NO rule permits the action, @casl throws — surfaced as a real 403 rather
+ * than masked as an empty result (route gates normally catch this first).
+ */
+export const accessibleWhere = (
+  ability: AppAbility,
+  action: Actions,
+  subjectName: Exclude<Subjects, 'all'>,
+): Record<string, unknown> => {
+  const records = accessibleBy(ability as Parameters<typeof accessibleBy>[0], action) as Record<string, Record<string, unknown>>;
+  try {
+    return records[subjectName];
+  } catch {
+    // No rule permits this action on this subject — forbidden, not "empty".
+    throw new AppError('FORBIDDEN', 403);
+  }
 };

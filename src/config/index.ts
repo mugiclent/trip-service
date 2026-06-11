@@ -19,4 +19,9 @@ export const config = {
     url: `amqp://${env.RABBITMQ_USER}:${env.RABBITMQ_PASSWORD}@${env.RABBITMQ_HOST}:${env.RABBITMQ_PORT}`,
   },
 
+  jwt: {
+    // PEM key — replace literal \n from .env with real newlines
+    publicKey: env.JWT_PUBLIC_KEY.replace(/\\n/g, '\n'),
+  },
+
 } as const;

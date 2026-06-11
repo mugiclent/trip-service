@@ -10,6 +10,7 @@ services:
       DB_PASSWORD:       ${DB_PASSWORD}
       DB_NAME:           ${DB_NAME}
       REDIS_PASSWORD:    ${REDIS_PASSWORD}
+      JWT_PUBLIC_KEY:    ${JWT_PUBLIC_KEY}
       RABBITMQ_USER:     ${RABBITMQ_USER}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
     networks:

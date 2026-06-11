@@ -3,6 +3,8 @@ import * as ticketsService from '../services/tickets.service.js';
 import { streamTicketStatus } from '../services/sse.service.js';
 import type { AuthenticatedUser } from '../utils/ability.js';
 import { AppError } from '../utils/AppError.js';
+import { consumeSudoToken } from '../middleware/consumeSudoToken.js';
+import { getRedisClient } from '../loaders/redis.js';
 
 export const book = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
@@ -20,6 +22,18 @@ export const book = async (req: Request, res: Response, next: NextFunction): Pro
     const seatsCount = body.seats_count ?? 1;
 
     if (user) {
+      // Wallet purchase (authenticated path). Passengers must step up — spending
+      // real money from their wallet requires a fresh password re-auth (≤3 min,
+      // single-use sudo token). Staff are exempt (they sell via /cash, not wallet).
+      if (user.user_type === 'passenger') {
+        await consumeSudoToken(
+          req.headers['x-sudo-token'] as string | undefined,
+          user.id,
+          'purchase_ticket',
+          getRedisClient(),
+        );
+      }
+
       const result = await ticketsService.bookWalletTicket(user, {
         trip_id: body.trip_id,
         boarding_stop_id: body.boarding_stop_id,

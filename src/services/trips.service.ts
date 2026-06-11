@@ -2,8 +2,9 @@ import { prisma } from '../models/index.js';
 import type { Prisma } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { publishAudit } from '../utils/publishers.js';
-import { buildAbilityFromRules, getScopeFor } from '../utils/ability.js';
-import type { AuthenticatedUser } from '../utils/ability.js';
+import { subject } from '@casl/ability';
+import { buildAbilityFromRules, getScopeFor, accessibleWhere } from '../utils/ability.js';
+import type { AuthenticatedUser, Subjects } from '../utils/ability.js';
 
 const VALID_FREQUENCIES = [null, 30, 60, 90, 120, 180, 240];
 const END_OF_DAY_HOUR = 22;
@@ -118,7 +119,7 @@ export const createTrips = async (
   if (!route) throw new AppError('ROUTE_NOT_FOUND', 404);
 
   const scopedOrgId = user.org_id ?? route.org_id;
-  if (user.org_id && route.org_id !== user.org_id) throw new AppError('FORBIDDEN', 403);
+  if (!buildAbilityFromRules(user.rules).can('create', subject('Trip', { org_id: route.org_id }) as unknown as Subjects)) throw new AppError('FORBIDDEN', 403);
 
   let totalSeats = data.total_seats;
   if (data.bus_id) {
@@ -326,28 +327,32 @@ export const listTrips = async (
   },
 ) => {
   const ability = buildAbilityFromRules(user.rules);
-  const scope = getScopeFor(ability, 'read', 'Trip');
-  const scopedOrgId = scope === 'platform' ? filters.org_id : user.org_id;
+  // Org boundary comes from the caller's Trip rule conditions. Only platform-scope
+  // callers may narrow to an arbitrary org via filters.org_id.
+  const isPlatform = getScopeFor(ability, 'read', 'Trip') === 'platform';
 
   const page = filters.page ?? 1;
   const limit = filters.limit ?? 20;
   const skip = (page - 1) * limit;
 
   const where: Prisma.TripWhereInput = {
-    ...(scopedOrgId ? { org_id: scopedOrgId } : {}),
-    ...(filters.route_id ? { route_id: filters.route_id } : {}),
-    ...(filters.status ? { status: filters.status as never } : {}),
-    ...(filters.driver_id ? { driver_id: filters.driver_id } : {}),
-    ...(filters.unassigned_bus ? { bus_id: null } : {}),
-    ...(filters.unassigned_driver ? { driver_id: null } : {}),
-    ...(filters.from || filters.to
-      ? {
-          departure_at: {
-            ...(filters.from ? { gte: new Date(filters.from) } : {}),
-            ...(filters.to ? { lte: new Date(filters.to) } : {}),
-          },
-        }
-      : {}),
+    AND: [
+      accessibleWhere(ability, 'read', 'Trip'),
+      ...(isPlatform && filters.org_id ? [{ org_id: filters.org_id }] : []),
+      ...(filters.route_id ? [{ route_id: filters.route_id }] : []),
+      ...(filters.status ? [{ status: filters.status as never }] : []),
+      ...(filters.driver_id ? [{ driver_id: filters.driver_id }] : []),
+      ...(filters.unassigned_bus ? [{ bus_id: null }] : []),
+      ...(filters.unassigned_driver ? [{ driver_id: null }] : []),
+      ...(filters.from || filters.to
+        ? [{
+            departure_at: {
+              ...(filters.from ? { gte: new Date(filters.from) } : {}),
+              ...(filters.to ? { lte: new Date(filters.to) } : {}),
+            },
+          }]
+        : []),
+    ],
   };
 
   const [trips, total] = await Promise.all([
@@ -379,7 +384,7 @@ export const updateTrip = async (
 ) => {
   const trip = await prisma.trip.findUnique({ where: { id } });
   if (!trip) throw new AppError('TRIP_NOT_FOUND', 404);
-  if (user.org_id && trip.org_id !== user.org_id) throw new AppError('FORBIDDEN', 403);
+  if (!buildAbilityFromRules(user.rules).can('update', subject('Trip', trip) as unknown as Subjects)) throw new AppError('FORBIDDEN', 403);
 
   if (scope === 'this') {
     const updated = await prisma.trip.update({
@@ -433,7 +438,7 @@ export const cancelTrip = async (
 ) => {
   const trip = await prisma.trip.findUnique({ where: { id } });
   if (!trip) throw new AppError('TRIP_NOT_FOUND', 404);
-  if (user.org_id && trip.org_id !== user.org_id) throw new AppError('FORBIDDEN', 403);
+  if (!buildAbilityFromRules(user.rules).can('cancel', subject('Trip', trip) as unknown as Subjects)) throw new AppError('FORBIDDEN', 403);
 
   if (scope === 'this') {
     await prisma.trip.update({ where: { id }, data: { status: 'cancelled' } });
@@ -488,7 +493,7 @@ export const activateTrip = async (user: AuthenticatedUser, id: string) => {
     },
   });
   if (!trip) throw new AppError('TRIP_NOT_FOUND', 404);
-  if (user.org_id && trip.org_id !== user.org_id) throw new AppError('FORBIDDEN', 403);
+  if (!buildAbilityFromRules(user.rules).can('update', subject('Trip', trip) as unknown as Subjects)) throw new AppError('FORBIDDEN', 403);
 
   await prisma.trip.update({ where: { id }, data: { status: 'active' } });
 
@@ -502,7 +507,7 @@ export const activateTrip = async (user: AuthenticatedUser, id: string) => {
 export const completeTrip = async (user: AuthenticatedUser, id: string) => {
   const trip = await prisma.trip.findUnique({ where: { id } });
   if (!trip) throw new AppError('TRIP_NOT_FOUND', 404);
-  if (user.org_id && trip.org_id !== user.org_id) throw new AppError('FORBIDDEN', 403);
+  if (!buildAbilityFromRules(user.rules).can('update', subject('Trip', trip) as unknown as Subjects)) throw new AppError('FORBIDDEN', 403);
 
   await prisma.trip.update({ where: { id }, data: { status: 'completed' } });
 

@@ -17,6 +17,10 @@ const schema = Joi.object({
   REDIS_HOST: Joi.string().default('redis'),
   REDIS_PORT: Joi.number().default(6379),
 
+  // EdDSA public key (same one the gateway holds) — used to verify sudo step-up
+  // tokens minted by user-service for sensitive actions (wallet ticket purchase).
+  JWT_PUBLIC_KEY: Joi.string().required(),
+
   RABBITMQ_USER: Joi.string().required(),
   RABBITMQ_PASSWORD: Joi.string().required(),
   RABBITMQ_HOST: Joi.string().default('rabbitmq'),
@@ -43,6 +47,7 @@ export const env = value as {
   REDIS_PASSWORD: string;
   REDIS_HOST: string;
   REDIS_PORT: number;
+  JWT_PUBLIC_KEY: string;
   RABBITMQ_USER: string;
   RABBITMQ_PASSWORD: string;
   RABBITMQ_HOST: string;

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import Joi from 'joi';
-import { authenticate } from '../middleware/authenticate.js';
+import { authenticate, optionalAuthenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { validate } from '../middleware/validate.js';
 import * as ctrl from '../controllers/locations.controller.js';
@@ -21,8 +21,8 @@ const updateSchema = Joi.object({
   city: Joi.string().max(255).optional(),
 }).min(1);
 
-router.get('/', ctrl.list);
-router.get('/:id', ctrl.get);
+router.get('/', optionalAuthenticate, ctrl.list);
+router.get('/:id', optionalAuthenticate, ctrl.get);
 router.post('/', authenticate, authorize('create', 'Location'), validate(createSchema), ctrl.create);
 router.patch('/:id', authenticate, authorize('update', 'Location'), validate(updateSchema), ctrl.update);
 router.delete('/:id', authenticate, authorize('delete', 'Location'), ctrl.remove);

@@ -80,6 +80,7 @@ model Organisation {
   tickets     Ticket[]
   staff_users StaffUser[]
   prices      Price[]
+  stops       Stop[]
 
   @@map("organisations")
 }
@@ -114,21 +115,35 @@ model StaffUser {
 
 model Stop {
   id         String   @id @default(uuid())
-  name       String   @unique @db.VarChar(255)
-  lat        Decimal  @db.Decimal(10, 7)
-  lng        Decimal  @db.Decimal(10, 7)
-  city       String?  @db.VarChar(255)
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
+  // Copy-on-write override: null org_id = platform default; an org fork keeps the
+  // default's id as the canonical reference target and only overlays name/coords
+  // at read time (so route_stops/prices/tickets never need to re-point). is_hidden
+  // tombstones a default for one org; net-new org stops have override_of = null.
+  org_id      String?
+  override_of String?
+  is_hidden   Boolean  @default(false)
+  name        String   @db.VarChar(255)
+  lat         Decimal  @db.Decimal(10, 7)
+  lng         Decimal  @db.Decimal(10, 7)
+  city        String?  @db.VarChar(255)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
 
+  org                Organisation? @relation(fields: [org_id], references: [id])
+  override_parent    Stop?         @relation("StopOverride", fields: [override_of], references: [id], onDelete: Cascade)
+  overrides          Stop[]        @relation("StopOverride")
   route_stops        RouteStop[]
-  origin_routes      Route[]     @relation("OriginStop")
-  destination_routes Route[]     @relation("DestinationStop")
-  boarding_prices    Price[]     @relation("BoardingPrice")
-  alighting_prices   Price[]     @relation("AlightingPrice")
-  boarding_tickets   Ticket[]    @relation("BoardingTicket")
-  alighting_tickets  Ticket[]    @relation("AlightingTicket")
+  origin_routes      Route[]       @relation("OriginStop")
+  destination_routes Route[]       @relation("DestinationStop")
+  boarding_prices    Price[]       @relation("BoardingPrice")
+  alighting_prices   Price[]       @relation("AlightingPrice")
+  boarding_tickets   Ticket[]      @relation("BoardingTicket")
+  alighting_tickets  Ticket[]      @relation("AlightingTicket")
 
+  // Per-org-scoped name uniqueness; a partial unique index (in the migration)
+  // enforces one default per name (org_id IS NULL).
+  @@unique([name, org_id])
+  @@index([org_id])
   @@map("stops")
 }
 

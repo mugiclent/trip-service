@@ -113,7 +113,7 @@ model StaffUser {
 
 model Stop {
   id         String   @id @default(uuid())
-  name       String   @db.VarChar(255)
+  name       String   @unique @db.VarChar(255)
   lat        Decimal  @db.Decimal(10, 7)
   lng        Decimal  @db.Decimal(10, 7)
   city       String?  @db.VarChar(255)

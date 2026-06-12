@@ -5,10 +5,13 @@ import { initPrisma } from './loaders/prisma.js';
 import { initRedis } from './loaders/redis.js';
 import { initRabbitMQ, closeRabbitMQ } from './loaders/rabbitmq.js';
 import { initBullMQ, closeBullMQ } from './loaders/bullmq.js';
+import { bootstrap } from './loaders/bootstrap.js';
 import { prisma } from './models/index.js';
 
 const start = async (): Promise<void> => {
   await initPrisma();
+  // Idempotently sync the canonical reference network (stops, routes, fares).
+  await bootstrap();
   initRedis();
   // Subscribers are (re)attached inside the RabbitMQ loader's setupChannels, so
   // they survive reconnects — no separate init needed here.

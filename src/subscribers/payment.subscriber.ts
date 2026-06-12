@@ -2,18 +2,17 @@ import type { Channel, ConsumeMessage } from 'amqplib';
 import { getRedisClient } from '../loaders/redis.js';
 import { prisma } from '../models/index.js';
 import { seatHoldQueue, smsCoordQueue, smsReminderQueue } from '../loaders/bullmq.js';
-import { publishRefundRequested, publishTicketConfirmed, publishSms } from '../utils/publishers.js';
+import { publishRefundRequested, publishTicketConfirmed } from '../utils/publishers.js';
 
+// Shapes as emitted by payment-service: camelCase, dispatched by AMQP routing
+// key (no `type` field in the body).
 interface PaymentConfirmedEvent {
-  type: 'ticket.payment.confirmed' | 'payment.confirmed';
-  ticket_id: string;
-  payment_ref?: string;
+  ticketId: string;
+  paymentRef?: string;
 }
 
 interface PaymentFailedEvent {
-  type: 'ticket.payment.failed' | 'payment.failed';
-  ticket_id: string;
-  payment_method: string;
+  ticketId: string;
   reason: string;
   retryable: boolean;
   available?: number;
@@ -21,21 +20,9 @@ interface PaymentFailedEvent {
   shortfall?: number;
 }
 
-interface RefundCompletedEvent {
-  type: 'refund.completed';
-  ticket_id: string;
-  payment_ref: string;
-  amount: number;
-  currency: string;
-  payment_method: string;
-  user_id: string | null;
-}
-
-type PaymentEvent = PaymentConfirmedEvent | PaymentFailedEvent | RefundCompletedEvent;
-
 const handlePaymentConfirmed = async (event: PaymentConfirmedEvent): Promise<void> => {
   const ticket = await prisma.ticket.findUnique({
-    where: { id: event.ticket_id },
+    where: { id: event.ticketId },
     include: {
       trip: {
         include: {
@@ -160,12 +147,12 @@ const handlePaymentConfirmed = async (event: PaymentConfirmedEvent): Promise<voi
 };
 
 const handlePaymentFailed = async (event: PaymentFailedEvent): Promise<void> => {
-  const ticket = await prisma.ticket.findUnique({ where: { id: event.ticket_id } });
+  const ticket = await prisma.ticket.findUnique({ where: { id: event.ticketId } });
   if (!ticket || ticket.status !== 'payment_pending') return;
 
   await prisma.$transaction([
     prisma.ticket.update({
-      where: { id: event.ticket_id },
+      where: { id: event.ticketId },
       data: { status: 'failed' },
     }),
     prisma.trip.update({
@@ -174,11 +161,11 @@ const handlePaymentFailed = async (event: PaymentFailedEvent): Promise<void> => 
     }),
   ]);
 
-  const job = await seatHoldQueue.getJob(`seat-hold-${event.ticket_id}`);
+  const job = await seatHoldQueue.getJob(`seat-hold-${event.ticketId}`);
   if (job) await job.remove();
 
   await getRedisClient().publish(
-    `booking:${event.ticket_id}`,
+    `booking:${event.ticketId}`,
     JSON.stringify({
       status: 'failed',
       reason: event.reason,
@@ -188,36 +175,24 @@ const handlePaymentFailed = async (event: PaymentFailedEvent): Promise<void> => 
   );
 };
 
-const handleRefundCompleted = async (event: RefundCompletedEvent): Promise<void> => {
-  const ticket = await prisma.ticket.findUnique({ where: { payment_ref: event.payment_ref } });
-  if (!ticket?.passenger_phone) return;
-
-  publishSms({
-    type: 'trip.refund_completed',
-    phone_number: ticket.passenger_phone,
-    amount: event.amount,
-    payment_method: event.payment_method,
-  });
-};
-
 export const initPaymentSubscriber = async (ch: Channel): Promise<void> => {
   await ch.consume('payment-trip-svc', async (msg: ConsumeMessage | null) => {
     if (!msg) return;
 
-    try {
-      const event = JSON.parse(msg.content.toString()) as PaymentEvent;
+    // payment-service dispatches by AMQP routing key (no `type` in the body).
+    const routingKey = msg.fields.routingKey;
 
-      if (event.type === 'ticket.payment.confirmed' || event.type === 'payment.confirmed') {
-        await handlePaymentConfirmed(event as PaymentConfirmedEvent);
-      } else if (event.type === 'ticket.payment.failed' || event.type === 'payment.failed') {
-        await handlePaymentFailed(event as PaymentFailedEvent);
-      } else if (event.type === 'refund.completed') {
-        await handleRefundCompleted(event as RefundCompletedEvent);
+    try {
+      if (routingKey === 'payment.confirmed') {
+        await handlePaymentConfirmed(JSON.parse(msg.content.toString()) as PaymentConfirmedEvent);
+      } else if (routingKey === 'payment.failed') {
+        await handlePaymentFailed(JSON.parse(msg.content.toString()) as PaymentFailedEvent);
       }
+      // topup.* and wallet.events are for user-service; ignore here.
 
       try { ch.ack(msg); } catch { /* channel closed — broker requeues */ }
     } catch (err) {
-      console.error('[payment.subscriber] Error processing message', err);
+      console.error('[payment.subscriber] Error processing message', routingKey, err);
       try { ch.nack(msg, false, false); } catch { /* channel closed — broker requeues */ }
     }
   });

@@ -102,7 +102,7 @@ export const bookWalletTicket = async (
   await seatHoldQueue.add(
     'expire-seat-hold',
     { ticket_id: ticket.id, trip_id: data.trip_id, seats_count: data.seats_count },
-    { jobId: `seat-hold:${ticket.id}`, delay: WALLET_TTL_MS, removeOnComplete: true, removeOnFail: 100 },
+    { jobId: `seat-hold-${ticket.id}`, delay: WALLET_TTL_MS, removeOnComplete: true, removeOnFail: 100 },
   );
 
   publishPaymentRequested({
@@ -168,7 +168,7 @@ export const bookMomoTicket = async (data: {
   await seatHoldQueue.add(
     'expire-seat-hold',
     { ticket_id: ticket.id, trip_id: data.trip_id, seats_count: data.seats_count },
-    { jobId: `seat-hold:${ticket.id}`, delay: MOMO_TTL_MS, removeOnComplete: true, removeOnFail: 100 },
+    { jobId: `seat-hold-${ticket.id}`, delay: MOMO_TTL_MS, removeOnComplete: true, removeOnFail: 100 },
   );
 
   publishPaymentRequested({
@@ -232,7 +232,7 @@ export const bookCashTicket = async (
   await seatHoldQueue.add(
     'expire-seat-hold',
     { ticket_id: ticket.id, trip_id: data.trip_id, seats_count: seatsCount },
-    { jobId: `seat-hold:${ticket.id}`, delay: WALLET_TTL_MS, removeOnComplete: true, removeOnFail: 100 },
+    { jobId: `seat-hold-${ticket.id}`, delay: WALLET_TTL_MS, removeOnComplete: true, removeOnFail: 100 },
   );
 
   publishPaymentRequested({

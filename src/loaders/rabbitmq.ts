@@ -1,49 +1,47 @@
 import amqplib from 'amqplib';
 import type { Channel, ChannelModel } from 'amqplib';
 import { config } from '../config/index.js';
+import { initUsersSubscriber } from '../subscribers/users.subscriber.js';
+import { initPaymentSubscriber } from '../subscribers/payment.subscriber.js';
+import { initTaxSubscriber } from '../subscribers/tax.subscriber.js';
+
+const RETRY_DELAY_MS = 3_000;
 
 let connection: ChannelModel;
 let publishChannel: Channel;
 let consumerChannel: Channel;
+let isShuttingDown = false;
+let isReconnecting = false;
+let isReconnectingChannel = false;
 
-const connectWithRetry = async (): Promise<ChannelModel> => {
-  for (;;) {
-    try {
-      const conn = await amqplib.connect(config.rabbitmq.url);
-      console.warn('[rabbitmq] Connected');
-      return conn;
-    } catch (err) {
-      console.error('[rabbitmq] Connection failed, retrying in 3s', err);
-      await new Promise((r) => setTimeout(r, 3000));
-    }
-  }
-};
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
-export const initRabbitMQ = async (): Promise<void> => {
-  connection = await connectWithRetry();
+// ── Health state ──────────────────────────────────────────────────────────────
 
-  connection.on('close', () => {
-    console.warn('[rabbitmq] Connection closed — reconnecting');
-    void initRabbitMQ();
-  });
+type RabbitHealth = { ok: boolean; error?: string };
+let rabbitHealth: RabbitHealth = { ok: false, error: 'not yet connected' };
 
-  publishChannel = await connection.createChannel();
+export const getRabbitMQHealth = (): RabbitHealth => rabbitHealth;
+
+// ── Channel setup ─────────────────────────────────────────────────────────────
+
+const setupChannels = async (): Promise<void> => {
+  publishChannel  = await connection.createChannel();
   consumerChannel = await connection.createChannel();
+
+  // Backpressure: at most one unacked message in flight while a handler runs.
   await consumerChannel.prefetch(1);
 
-  // Assert own exchange
+  // `trips` is owned by this service — declare it. The rest are shared exchanges
+  // declared by their owners; assert is idempotent with matching parameters.
   await publishChannel.assertExchange('trips', 'topic', { durable: true });
-
-  // Assert shared exchanges we publish to
   await publishChannel.assertExchange('logs', 'topic', { durable: true });
   await publishChannel.assertExchange('notifications', 'topic', { durable: true });
-
-  // Assert exchanges we consume from (idempotent — producers assert these too)
   await consumerChannel.assertExchange('users', 'topic', { durable: true });
   await consumerChannel.assertExchange('payment', 'topic', { durable: true });
   await consumerChannel.assertExchange('tax', 'topic', { durable: true });
 
-  // Assert consumer queues + bindings
   await consumerChannel.assertQueue('users-trip-svc', {
     durable: true,
     arguments: { 'x-dead-letter-exchange': 'users.dlx' },
@@ -57,23 +55,102 @@ export const initRabbitMQ = async (): Promise<void> => {
   });
   await consumerChannel.bindQueue('payment-trip-svc', 'payment', '#');
 
-  await consumerChannel.assertQueue('tax-trip-svc', {
-    durable: true,
-  });
+  await consumerChannel.assertQueue('tax-trip-svc', { durable: true });
   await consumerChannel.bindQueue('tax-trip-svc', 'tax', '#');
+
+  // (Re)attach consumers on the fresh channel — must run on every (re)connect,
+  // otherwise the queues exist with nothing consuming them after a reconnect.
+  await initUsersSubscriber(consumerChannel);
+  await initPaymentSubscriber(consumerChannel);
+  await initTaxSubscriber(consumerChannel);
+
+  rabbitHealth = { ok: true };
+  console.warn('[rabbitmq] Connected — consumers listening');
+
+  // Channel-level handlers — a broker-forced channel close kills the consumer
+  // without closing the connection. Recreate channels without a full reconnect.
+  for (const [name, ch] of [
+    ['publish', publishChannel],
+    ['consumer', consumerChannel],
+  ] as [string, Channel][]) {
+    ch.on('error', (err: Error) => {
+      console.warn(`[rabbitmq] ${name}Channel error:`, err.message);
+    });
+    ch.on('close', () => {
+      if (isShuttingDown || isReconnecting || isReconnectingChannel) return;
+      isReconnectingChannel = true;
+      rabbitHealth = { ok: false, error: `${name}Channel closed — re-creating` };
+      console.warn(`[rabbitmq] ${name}Channel closed — re-creating in ${RETRY_DELAY_MS / 1000}s`);
+      setTimeout(() => {
+        void setupChannels()
+          .catch((err: Error) => {
+            console.warn('[rabbitmq] Failed to re-create channels:', err.message);
+          })
+          .finally(() => {
+            isReconnectingChannel = false;
+          });
+      }, RETRY_DELAY_MS);
+    });
+  }
 };
+
+// ── Connection setup ──────────────────────────────────────────────────────────
+
+const setup = async (): Promise<void> => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      connection = await amqplib.connect(config.rabbitmq.url);
+      break;
+    } catch {
+      console.warn(`[rabbitmq] Broker not ready (attempt ${attempt}) — retrying in ${RETRY_DELAY_MS / 1000}s`);
+      await sleep(RETRY_DELAY_MS);
+    }
+  }
+
+  // Register BEFORE channel work — if setupChannels() throws, the connection
+  // still has a close handler so scheduleReconnect fires correctly.
+  connection.on('close', scheduleReconnect);
+  connection.on('error', (err: Error) => {
+    console.warn('[rabbitmq] Connection error:', err.message);
+  });
+
+  await setupChannels();
+};
+
+const scheduleReconnect = (): void => {
+  if (isShuttingDown || isReconnecting) return;
+  isReconnecting = true;
+  rabbitHealth = { ok: false, error: 'connection lost — reconnecting' };
+  console.warn('[rabbitmq] Connection lost — reconnecting...');
+
+  void (async () => {
+    for (;;) {
+      await sleep(RETRY_DELAY_MS);
+      try {
+        await setup();
+        isReconnecting = false;
+        return;
+      } catch (err) {
+        console.warn('[rabbitmq] Reconnect attempt failed:', (err as Error).message);
+        try { await connection?.close(); } catch { /* already closed */ }
+      }
+    }
+  })();
+};
+
+// ── Public API ────────────────────────────────────────────────────────────────
 
 export const getRabbitMQChannel = (): Channel => {
   if (!publishChannel) throw new Error('RabbitMQ publish channel not initialized');
   return publishChannel;
 };
 
-export const getConsumerChannel = (): Channel => {
-  if (!consumerChannel) throw new Error('RabbitMQ consumer channel not initialized');
-  return consumerChannel;
+export const initRabbitMQ = async (): Promise<void> => {
+  await setup();
 };
 
 export const closeRabbitMQ = async (): Promise<void> => {
+  isShuttingDown = true;
   await consumerChannel?.close();
   await publishChannel?.close();
   await connection?.close();

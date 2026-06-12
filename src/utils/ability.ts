@@ -43,6 +43,9 @@ export const getScopeFor = (
   const rules = ability.rulesFor(action, subject as any);
   if (rules.some((r) => !r.conditions)) return 'platform';
   if (rules.some((r) => r.conditions && 'org_id' in (r.conditions as object))) return 'org';
+  // The Org subject references its own org by `id` (no `org_id` on an Org row), so
+  // an org-scoped grant on Org bakes `{ id: orgId }` — that is ORG scope, not own.
+  if (subject === 'Org' && rules.some((r) => r.conditions && 'id' in (r.conditions as object))) return 'org';
   if (rules.some((r) => r.conditions && (('id' in (r.conditions as object)) || ('user_id' in (r.conditions as object))))) return 'own';
   return null;
 };

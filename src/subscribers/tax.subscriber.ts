@@ -1,5 +1,4 @@
-import type { ConsumeMessage } from 'amqplib';
-import { getConsumerChannel } from '../loaders/rabbitmq.js';
+import type { Channel, ConsumeMessage } from 'amqplib';
 import { getRedisClient } from '../loaders/redis.js';
 import { prisma } from '../models/index.js';
 import { smsCoordQueue } from '../loaders/bullmq.js';
@@ -13,7 +12,7 @@ interface TaxConfirmedEvent {
 }
 
 const handleTaxConfirmed = async (event: TaxConfirmedEvent): Promise<void> => {
-  const job = await smsCoordQueue.getJob(`sms:${event.ticket_id}`);
+  const job = await smsCoordQueue.getJob(`sms-${event.ticket_id}`);
 
   if (job) {
     await job.remove();
@@ -58,9 +57,7 @@ const handleTaxConfirmed = async (event: TaxConfirmedEvent): Promise<void> => {
   }
 };
 
-export const initTaxSubscriber = async (): Promise<void> => {
-  const ch = getConsumerChannel();
-
+export const initTaxSubscriber = async (ch: Channel): Promise<void> => {
   await ch.consume('tax-trip-svc', async (msg: ConsumeMessage | null) => {
     if (!msg) return;
 
@@ -71,10 +68,10 @@ export const initTaxSubscriber = async (): Promise<void> => {
         await handleTaxConfirmed(event);
       }
 
-      ch.ack(msg);
+      try { ch.ack(msg); } catch { /* channel closed — broker requeues */ }
     } catch (err) {
       console.error('[tax.subscriber] Error processing message', err);
-      ch.nack(msg, false, false);
+      try { ch.nack(msg, false, false); } catch { /* channel closed — broker requeues */ }
     }
   });
 

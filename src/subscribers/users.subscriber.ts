@@ -1,5 +1,4 @@
-import type { ConsumeMessage } from 'amqplib';
-import { getConsumerChannel } from '../loaders/rabbitmq.js';
+import type { Channel, ConsumeMessage } from 'amqplib';
 import { prisma } from '../models/index.js';
 
 interface OrgActivatedEvent {
@@ -179,9 +178,7 @@ const handleStaffDeleted = async (event: StaffDeletedEvent): Promise<void> => {
   ]);
 };
 
-export const initUsersSubscriber = async (): Promise<void> => {
-  const ch = getConsumerChannel();
-
+export const initUsersSubscriber = async (ch: Channel): Promise<void> => {
   await ch.consume('users-trip-svc', async (msg: ConsumeMessage | null) => {
     if (!msg) return;
 
@@ -199,10 +196,10 @@ export const initUsersSubscriber = async (): Promise<void> => {
         default: break;
       }
 
-      ch.ack(msg);
+      try { ch.ack(msg); } catch { /* channel closed — broker requeues */ }
     } catch (err) {
       console.error('[users.subscriber] Error processing message', err);
-      ch.nack(msg, false, false);
+      try { ch.nack(msg, false, false); } catch { /* channel closed — broker requeues */ }
     }
   });
 

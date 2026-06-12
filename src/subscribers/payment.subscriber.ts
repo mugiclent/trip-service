@@ -1,5 +1,4 @@
-import type { ConsumeMessage } from 'amqplib';
-import { getConsumerChannel } from '../loaders/rabbitmq.js';
+import type { Channel, ConsumeMessage } from 'amqplib';
 import { getRedisClient } from '../loaders/redis.js';
 import { prisma } from '../models/index.js';
 import { seatHoldQueue, smsCoordQueue, smsReminderQueue } from '../loaders/bullmq.js';
@@ -73,7 +72,7 @@ const handlePaymentConfirmed = async (event: PaymentConfirmedEvent): Promise<voi
     data: { status: 'confirmed', confirmed_at: confirmedAt },
   });
 
-  const job = await seatHoldQueue.getJob(`seat-hold:${ticket.id}`);
+  const job = await seatHoldQueue.getJob(`seat-hold-${ticket.id}`);
   if (job) await job.remove();
 
   await getRedisClient().publish(
@@ -131,7 +130,7 @@ const handlePaymentConfirmed = async (event: PaymentConfirmedEvent): Promise<voi
         ticket_price: ticket.ticket_price,
       },
       {
-        jobId: `sms:${ticket.id}`,
+        jobId: `sms-${ticket.id}`,
         delay: 1000,
         removeOnComplete: true,
         removeOnFail: 100,
@@ -150,7 +149,7 @@ const handlePaymentConfirmed = async (event: PaymentConfirmedEvent): Promise<voi
           departure_time: ticket.trip.departure_at.toISOString(),
         },
         {
-          jobId: `sms-reminder:${ticket.id}`,
+          jobId: `sms-reminder-${ticket.id}`,
           delay: reminderDelay,
           removeOnComplete: true,
           removeOnFail: 100,
@@ -175,7 +174,7 @@ const handlePaymentFailed = async (event: PaymentFailedEvent): Promise<void> => 
     }),
   ]);
 
-  const job = await seatHoldQueue.getJob(`seat-hold:${event.ticket_id}`);
+  const job = await seatHoldQueue.getJob(`seat-hold-${event.ticket_id}`);
   if (job) await job.remove();
 
   await getRedisClient().publish(
@@ -201,9 +200,7 @@ const handleRefundCompleted = async (event: RefundCompletedEvent): Promise<void>
   });
 };
 
-export const initPaymentSubscriber = async (): Promise<void> => {
-  const ch = getConsumerChannel();
-
+export const initPaymentSubscriber = async (ch: Channel): Promise<void> => {
   await ch.consume('payment-trip-svc', async (msg: ConsumeMessage | null) => {
     if (!msg) return;
 
@@ -218,10 +215,10 @@ export const initPaymentSubscriber = async (): Promise<void> => {
         await handleRefundCompleted(event as RefundCompletedEvent);
       }
 
-      ch.ack(msg);
+      try { ch.ack(msg); } catch { /* channel closed — broker requeues */ }
     } catch (err) {
       console.error('[payment.subscriber] Error processing message', err);
-      ch.nack(msg, false, false);
+      try { ch.nack(msg, false, false); } catch { /* channel closed — broker requeues */ }
     }
   });
 

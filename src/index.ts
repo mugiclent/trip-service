@@ -5,20 +5,15 @@ import { initPrisma } from './loaders/prisma.js';
 import { initRedis } from './loaders/redis.js';
 import { initRabbitMQ, closeRabbitMQ } from './loaders/rabbitmq.js';
 import { initBullMQ, closeBullMQ } from './loaders/bullmq.js';
-import { initUsersSubscriber } from './subscribers/users.subscriber.js';
-import { initPaymentSubscriber } from './subscribers/payment.subscriber.js';
-import { initTaxSubscriber } from './subscribers/tax.subscriber.js';
 import { prisma } from './models/index.js';
 
 const start = async (): Promise<void> => {
   await initPrisma();
   initRedis();
+  // Subscribers are (re)attached inside the RabbitMQ loader's setupChannels, so
+  // they survive reconnects — no separate init needed here.
   await initRabbitMQ();
   initBullMQ();
-
-  await initUsersSubscriber();
-  await initPaymentSubscriber();
-  await initTaxSubscriber();
 
   const app = buildApp();
   const server = app.listen(config.port, () => {

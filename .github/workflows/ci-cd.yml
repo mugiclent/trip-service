@@ -96,12 +96,11 @@ jobs:
               --domain=http://localhost:8080 \
               --plain 2>/dev/null)
 
-            docker run --rm \
-              --network katisha-net \
-              -e DIRECT_DATABASE_URL="postgresql://trip_svc:${DB_PASSWORD}@db:5432/katisha_trips" \
-              ${{ secrets.DOCKER_USERNAME }}/trip-svc:${{ needs.build-and-push.outputs.image_tag }} \
-              npx prisma migrate resolve --applied 20260512004414_init || true
-
+            # migrate deploy is correct for both a fresh DB (it runs all pending
+            # migrations, incl. init, creating the schema) and an existing one (it
+            # applies only what's pending). Do NOT baseline with
+            # `migrate resolve --applied <init>` — on an empty DB that marks init
+            # "applied" without creating any tables, leaving the DB schema-less.
             docker run --rm \
               --network katisha-net \
               -e DIRECT_DATABASE_URL="postgresql://trip_svc:${DB_PASSWORD}@db:5432/katisha_trips" \

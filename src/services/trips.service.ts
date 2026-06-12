@@ -119,8 +119,11 @@ export const createTrips = async (
   });
   if (!route) throw new AppError('ROUTE_NOT_FOUND', 404);
 
+  // Routes are platform defaults (org_id null); the operating org comes from the
+  // staff member. A trip must belong to an operator.
   const scopedOrgId = user.org_id ?? route.org_id;
-  if (!buildAbilityFromRules(user.rules).can('create', subject('Trip', { org_id: route.org_id }) as unknown as Subjects)) throw new AppError('FORBIDDEN', 403);
+  if (!scopedOrgId) throw new AppError('ORG_REQUIRED', 400);
+  if (!buildAbilityFromRules(user.rules).can('create', subject('Trip', { org_id: scopedOrgId }) as unknown as Subjects)) throw new AppError('FORBIDDEN', 403);
 
   let totalSeats = data.total_seats;
   if (data.bus_id) {

@@ -29,7 +29,7 @@ const reorderSchema = Joi.object({
 });
 
 router.get('/', optionalAuthenticate, ctrl.list);
-router.get('/:id', ctrl.get);
+router.get('/:id', optionalAuthenticate, ctrl.get);
 router.post('/', authenticate, orgBlocking, authorize('create', 'Route'), validate(createSchema), ctrl.create);
 router.patch('/:id', authenticate, orgBlocking, authorize('update', 'Route'), validate(updateSchema), ctrl.update);
 router.delete('/:id', authenticate, orgBlocking, authorize('delete', 'Route'), ctrl.remove);

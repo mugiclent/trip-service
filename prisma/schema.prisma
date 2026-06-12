@@ -153,22 +153,33 @@ model Stop {
 
 model Route {
   id                  String   @id @default(uuid())
-  org_id              String
+  // Copy-on-write override: null org_id = platform default route; an org fork is a
+  // deep copy (route + its route_stops) with override_of pointing at the default.
+  // Unlike stops, a fork keeps its own id — trips reference a concrete route row, so
+  // the catalog simply shows the fork in place of the default. is_hidden tombstones.
+  org_id              String?
+  override_of         String?
+  is_hidden           Boolean  @default(false)
   name                String   @db.VarChar(255)
-  slug                String   @unique @db.VarChar(255)
+  slug                String   @db.VarChar(255)
   origin_stop_id      String
   destination_stop_id String
   is_active           Boolean  @default(true)
   created_at          DateTime @default(now())
   updated_at          DateTime @updatedAt
 
-  org              Organisation @relation(fields: [org_id], references: [id])
-  origin_stop      Stop         @relation("OriginStop", fields: [origin_stop_id], references: [id])
-  destination_stop Stop         @relation("DestinationStop", fields: [destination_stop_id], references: [id])
+  org              Organisation? @relation(fields: [org_id], references: [id])
+  override_parent  Route?        @relation("RouteOverride", fields: [override_of], references: [id], onDelete: Cascade)
+  overrides        Route[]       @relation("RouteOverride")
+  origin_stop      Stop          @relation("OriginStop", fields: [origin_stop_id], references: [id])
+  destination_stop Stop          @relation("DestinationStop", fields: [destination_stop_id], references: [id])
   route_stops      RouteStop[]
   trip_series      TripSeries[]
   trips            Trip[]
 
+  // Per-org-scoped slug uniqueness; a partial unique index (in the migration)
+  // enforces one default per slug (org_id IS NULL).
+  @@unique([slug, org_id])
   @@index([org_id])
   @@map("routes")
 }

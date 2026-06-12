@@ -62,17 +62,20 @@ export const bootstrap = async (): Promise<BootstrapResult> => {
   const routes: { name: string; id: string; durationMin: number }[] = [];
   for (const r of ROUTES) {
     const slug = slugify(r.name);
-    const route = await prisma.route.upsert({
-      where: { slug },
-      create: {
-        id: randomUUID(), org_id: ORG.id, name: r.name, slug,
-        origin_stop_id: stopId[r.stops[0]], destination_stop_id: stopId[r.stops[r.stops.length - 1]],
-      },
-      update: {
-        name: r.name,
-        origin_stop_id: stopId[r.stops[0]], destination_stop_id: stopId[r.stops[r.stops.length - 1]],
-      },
-    });
+    const origin_stop_id = stopId[r.stops[0]];
+    const destination_stop_id = stopId[r.stops[r.stops.length - 1]];
+    // Routes are platform defaults (org_id NULL) that operators run trips on. Claim
+    // any pre-existing route with this slug as the default (preserving its id so
+    // existing trips keep referencing it); slug uniqueness is now scoped per org.
+    const found = await prisma.route.findFirst({ where: { slug } });
+    const route = found
+      ? await prisma.route.update({
+          where: { id: found.id },
+          data: { org_id: null, name: r.name, origin_stop_id, destination_stop_id },
+        })
+      : await prisma.route.create({
+          data: { id: randomUUID(), org_id: null, name: r.name, slug, origin_stop_id, destination_stop_id },
+        });
 
     for (let i = 0; i < r.stops.length; i++) {
       await prisma.routeStop.upsert({

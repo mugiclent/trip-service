@@ -92,11 +92,18 @@ export const bootstrap = async (): Promise<BootstrapResult> => {
       continue;
     }
     for (const [x, y] of [[a, b], [b, a]]) {
-      await prisma.price.upsert({
-        where: { boarding_stop_id_alighting_stop_id: { boarding_stop_id: stopId[x], alighting_stop_id: stopId[y] } },
-        create: { id: randomUUID(), boarding_stop_id: stopId[x], alighting_stop_id: stopId[y], amount },
-        update: { amount },
+      // Platform default fare (org_id NULL). Find-or-create since the unique key is
+      // now scoped per org and a partial index guards the single default per pair.
+      const existing = await prisma.price.findFirst({
+        where: { boarding_stop_id: stopId[x], alighting_stop_id: stopId[y], org_id: null },
       });
+      if (existing) {
+        await prisma.price.update({ where: { id: existing.id }, data: { amount } });
+      } else {
+        await prisma.price.create({
+          data: { id: randomUUID(), boarding_stop_id: stopId[x], alighting_stop_id: stopId[y], amount, org_id: null },
+        });
+      }
       fareCount++;
     }
   }

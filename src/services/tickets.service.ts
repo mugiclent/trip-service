@@ -8,6 +8,7 @@ import { getRedisClient } from '../loaders/redis.js';
 import { detectNetwork } from '../utils/phone.js';
 import { buildAbilityFromRules, getScopeFor, accessibleWhere } from '../utils/ability.js';
 import type { AuthenticatedUser } from '../utils/ability.js';
+import { getEffectivePrice } from './prices.service.js';
 
 const WALLET_TTL_MS = 30_000;
 const MOMO_TTL_MS = 180_000;
@@ -46,14 +47,8 @@ const validateBookingRequest = async (params: {
   if (boardingOrder < 0 || alightingOrder < 0) throw new AppError('INVALID_ROUTE', 400);
   if (boardingOrder >= alightingOrder) throw new AppError('INVALID_STOP_ORDER', 400);
 
-  const price = await prisma.price.findUnique({
-    where: {
-      boarding_stop_id_alighting_stop_id: {
-        boarding_stop_id: params.boarding_stop_id,
-        alighting_stop_id: params.alighting_stop_id,
-      },
-    },
-  });
+  // Effective fare for the trip's operator: their fork wins, else the platform default.
+  const price = await getEffectivePrice(trip.org_id, params.boarding_stop_id, params.alighting_stop_id);
   if (!price) throw new AppError('PRICE_NOT_FOUND', 404);
 
   return { trip, price };

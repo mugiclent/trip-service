@@ -26,6 +26,7 @@ const bulkSchema = Joi.object({
 });
 
 router.get('/', ctrl.get);
+router.get('/list', authenticate, authorize('read', 'Price'), ctrl.list);
 router.post('/', authenticate, authorize('create', 'Price'), validate(createSchema), ctrl.create);
 router.patch('/:id', authenticate, authorize('update', 'Price'), validate(updateSchema), ctrl.update);
 router.delete('/:id', authenticate, authorize('delete', 'Price'), ctrl.remove);

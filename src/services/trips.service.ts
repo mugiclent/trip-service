@@ -5,6 +5,7 @@ import { publishAudit } from '../utils/publishers.js';
 import { subject } from '@casl/ability';
 import { buildAbilityFromRules, getScopeFor, accessibleWhere } from '../utils/ability.js';
 import type { AuthenticatedUser, Subjects } from '../utils/ability.js';
+import { getEffectivePrice } from './prices.service.js';
 
 const VALID_FREQUENCIES = [null, 30, 60, 90, 120, 180, 240];
 const END_OF_DAY_HOUR = 22;
@@ -252,14 +253,7 @@ export const searchTrips = async (params: {
 
   const tripsWithExtras = await Promise.all(
     trips.map(async (trip) => {
-      const price = await prisma.price.findUnique({
-        where: {
-          boarding_stop_id_alighting_stop_id: {
-            boarding_stop_id: params.boarding_stop_id,
-            alighting_stop_id: params.alighting_stop_id,
-          },
-        },
-      });
+      const price = await getEffectivePrice(trip.org_id, params.boarding_stop_id, params.alighting_stop_id);
 
       const siblingCount = trip.series_id
         ? await prisma.trip.count({

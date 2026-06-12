@@ -79,6 +79,7 @@ model Organisation {
   trips       Trip[]
   tickets     Ticket[]
   staff_users StaffUser[]
+  prices      Price[]
 
   @@map("organisations")
 }
@@ -178,6 +179,11 @@ model RouteStop {
 
 model Price {
   id                String   @id @default(uuid())
+  // Copy-on-write override: null org_id = platform default; override_of points
+  // at the default an org fork shadows; is_hidden tombstones a default for one org.
+  org_id            String?
+  override_of       String?
+  is_hidden         Boolean  @default(false)
   boarding_stop_id  String
   alighting_stop_id String
   amount            Int
@@ -185,11 +191,17 @@ model Price {
   created_at        DateTime @default(now())
   updated_at        DateTime @updatedAt
 
-  boarding_stop  Stop @relation("BoardingPrice", fields: [boarding_stop_id], references: [id])
-  alighting_stop Stop @relation("AlightingPrice", fields: [alighting_stop_id], references: [id])
+  boarding_stop   Stop          @relation("BoardingPrice", fields: [boarding_stop_id], references: [id])
+  alighting_stop  Stop          @relation("AlightingPrice", fields: [alighting_stop_id], references: [id])
+  org             Organisation? @relation(fields: [org_id], references: [id])
+  override_parent Price?        @relation("PriceOverride", fields: [override_of], references: [id], onDelete: Cascade)
+  overrides       Price[]       @relation("PriceOverride")
 
-  @@unique([boarding_stop_id, alighting_stop_id])
+  // Uniqueness is scoped per org. A partial unique index enforces one default per
+  // stop-pair (org_id IS NULL) — added in the migration since Prisma can't express it.
+  @@unique([boarding_stop_id, alighting_stop_id, org_id])
   @@index([boarding_stop_id, alighting_stop_id])
+  @@index([org_id])
   @@map("prices")
 }
 

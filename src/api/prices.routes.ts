@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import Joi from 'joi';
-import { authenticate } from '../middleware/authenticate.js';
+import { authenticate, optionalAuthenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { validate } from '../middleware/validate.js';
 import * as ctrl from '../controllers/prices.controller.js';
@@ -25,8 +25,10 @@ const bulkSchema = Joi.object({
   })).min(1).required(),
 });
 
-router.get('/', ctrl.get);
-router.get('/list', authenticate, authorize('read', 'Price'), ctrl.list);
+// Public fare browsing: anonymous callers get the platform defaults; a logged-in
+// org's staff get their effective (overridden) fares via optionalAuthenticate.
+router.get('/', optionalAuthenticate, ctrl.get);
+router.get('/list', optionalAuthenticate, ctrl.list);
 router.post('/', authenticate, authorize('create', 'Price'), validate(createSchema), ctrl.create);
 router.patch('/:id', authenticate, authorize('update', 'Price'), validate(updateSchema), ctrl.update);
 router.delete('/:id', authenticate, authorize('delete', 'Price'), ctrl.remove);

@@ -271,6 +271,9 @@ model TripSeries {
   total_seats       Int
   is_express        Boolean          @default(false)
   status            TripSeriesStatus @default(active)
+  // Rolling materialization horizon: the scheduler has created trip instances up
+  // to this instant. The next run generates only (materialized_until, horizonEnd].
+  materialized_until DateTime?
   created_at        DateTime         @default(now())
   updated_at        DateTime         @updatedAt
 

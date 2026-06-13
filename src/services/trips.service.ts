@@ -1,86 +1,15 @@
 import { prisma } from '../models/index.js';
 import type { Prisma } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
-import { publishAudit } from '../utils/publishers.js';
+import { publishAudit, publishRefundRequested, publishTripEvent } from '../utils/publishers.js';
 import { subject } from '@casl/ability';
 import { buildAbilityFromRules, getScopeFor, accessibleWhere } from '../utils/ability.js';
 import type { AuthenticatedUser, Subjects } from '../utils/ability.js';
 import { getEffectivePrice } from './prices.service.js';
+import { materializeSeries, horizonEnd } from './scheduling.js';
+import { localWallTimeToUtc, utcToLocalDay, localDayBoundsUtc } from '../utils/time.js';
 
 const VALID_FREQUENCIES = [null, 30, 60, 90, 120, 180, 240];
-const END_OF_DAY_HOUR = 22;
-const GENERATE_DAYS_AHEAD = 90;
-
-const parseDepartureTime = (timeStr: string, baseDate: Date): Date => {
-  const [hours, minutes] = timeStr.split(':').map(Number);
-  const d = new Date(baseDate);
-  d.setUTCHours(hours ?? 0, minutes ?? 0, 0, 0);
-  return d;
-};
-
-const generateTripInstances = (
-  seriesId: string,
-  orgId: string,
-  routeId: string,
-  busId: string | null | undefined,
-  driverId: string | null | undefined,
-  totalSeats: number,
-  cancellationAllowed: boolean,
-  departureTime: string,
-  frequencyMinutes: number | null,
-  repeatDaily: boolean,
-  startsOn: Date,
-  endsOn: Date | null,
-  isExpress: boolean,
-): Prisma.TripCreateManyInput[] => {
-  const trips: Prisma.TripCreateManyInput[] = [];
-
-  const endDate = repeatDaily
-    ? endsOn
-      ? new Date(endsOn)
-      : new Date(Date.now() + GENERATE_DAYS_AHEAD * 24 * 60 * 60 * 1000)
-    : new Date(startsOn);
-
-  let currentDate = new Date(startsOn);
-
-  while (currentDate <= endDate) {
-    const departureTimes: Date[] = [];
-    const firstDeparture = parseDepartureTime(departureTime, currentDate);
-
-    if (!frequencyMinutes) {
-      departureTimes.push(firstDeparture);
-    } else {
-      let t = new Date(firstDeparture);
-      const endOfDay = new Date(currentDate);
-      endOfDay.setUTCHours(END_OF_DAY_HOUR, 0, 0, 0);
-      while (t <= endOfDay) {
-        departureTimes.push(new Date(t));
-        t = new Date(t.getTime() + frequencyMinutes * 60 * 1000);
-      }
-    }
-
-    for (const depAt of departureTimes) {
-      trips.push({
-        org_id: orgId,
-        route_id: routeId,
-        bus_id: repeatDaily ? null : (busId ?? null),
-        driver_id: repeatDaily ? null : (driverId ?? null),
-        series_id: seriesId,
-        departure_at: depAt,
-        total_seats: totalSeats,
-        available_seats: totalSeats,
-        status: 'scheduled',
-        cancellation_allowed: cancellationAllowed,
-        is_express: isExpress,
-      });
-    }
-
-    if (!repeatDaily) break;
-    currentDate.setUTCDate(currentDate.getUTCDate() + 1);
-  }
-
-  return trips;
-};
 
 const tripWithDetails = {
   org: { select: { id: true, name: true, slug: true, logo_path: true, story: true } },
@@ -88,11 +17,6 @@ const tripWithDetails = {
   bus: { select: { id: true, plate: true, type: true } },
   driver: { select: { id: true, first_name: true, last_name: true, avatar_path: true } },
 } as const;
-
-const isOnlyInSeries = (seriesId: string | null): Prisma.TripWhereInput =>
-  seriesId
-    ? {}
-    : {};
 
 export const createTrips = async (
   user: AuthenticatedUser,
@@ -138,6 +62,10 @@ export const createTrips = async (
 
   const startsOn = new Date(data.starts_on);
   const endsOn = data.ends_on ? new Date(data.ends_on) : null;
+  if (endsOn && endsOn.getTime() < startsOn.getTime()) throw new AppError('INVALID_DATE_RANGE', 400);
+
+  // `org` is fetched above; cancellation_allowed flows into each trip via materializeSeries.
+  void org;
 
   const series = await prisma.tripSeries.create({
     data: {
@@ -156,23 +84,8 @@ export const createTrips = async (
     },
   });
 
-  const tripInputs = generateTripInstances(
-    series.id,
-    scopedOrgId,
-    data.route_id,
-    data.bus_id,
-    data.driver_id,
-    totalSeats,
-    org.cancellation_allowed,
-    data.departure_time,
-    data.frequency_minutes ?? null,
-    data.repeat_daily ?? false,
-    startsOn,
-    endsOn,
-    data.is_express ?? false,
-  );
-
-  await prisma.trip.createMany({ data: tripInputs });
+  // Materialize only the rolling horizon up front; the scheduler keeps it topped up.
+  const created = await materializeSeries(series, horizonEnd());
 
   const trips = await prisma.trip.findMany({
     where: { series_id: series.id },
@@ -180,17 +93,12 @@ export const createTrips = async (
     orderBy: { departure_at: 'asc' },
   });
 
-  const tripsWithFlag = await Promise.all(
-    trips.map(async (trip) => {
-      const siblingCount = await prisma.trip.count({
-        where: {
-          series_id: series.id,
-          status: { not: 'cancelled' },
-        },
-      });
-      return { ...trip, is_only_in_series: siblingCount === 1 };
-    }),
-  );
+  // is_only_in_series is a per-series constant — compute it once, not per trip.
+  const activeCount = await prisma.trip.count({
+    where: { series_id: series.id, status: { not: 'cancelled' } },
+  });
+  const isOnly = activeCount === 1;
+  const tripsWithFlag = trips.map((trip) => ({ ...trip, is_only_in_series: isOnly }));
 
   setImmediate(() => {
     publishAudit({
@@ -203,7 +111,7 @@ export const createTrips = async (
 
   return {
     series_id: series.id,
-    trips_created: trips.length,
+    trips_created: created,
     trips: tripsWithFlag,
   };
 };
@@ -214,10 +122,8 @@ export const searchTrips = async (params: {
   date: string;
   seats: number;
 }) => {
-  const dateStart = new Date(params.date);
-  dateStart.setUTCHours(0, 0, 0, 0);
-  const dateEnd = new Date(params.date);
-  dateEnd.setUTCHours(23, 59, 59, 999);
+  // "date" is a Kigali calendar day, not a UTC day.
+  const { start: dateStart, end: dateEnd } = localDayBoundsUtc(params.date);
 
   const routes = await prisma.route.findMany({
     where: {
@@ -254,22 +160,25 @@ export const searchTrips = async (params: {
     orderBy: { departure_at: 'asc' },
   });
 
+  // One grouped count for is_only_in_series instead of a count per trip.
+  const seriesIds = [...new Set(trips.map((t) => t.series_id).filter((s): s is string => !!s))];
+  const seriesCounts = seriesIds.length
+    ? await prisma.trip.groupBy({
+        by: ['series_id'],
+        where: { series_id: { in: seriesIds }, status: { not: 'cancelled' } },
+        _count: { _all: true },
+      })
+    : [];
+  const activeBySeries = new Map(seriesCounts.map((c) => [c.series_id, c._count._all]));
+
   const tripsWithExtras = await Promise.all(
     trips.map(async (trip) => {
       const price = await getEffectivePrice(trip.org_id, params.boarding_stop_id, params.alighting_stop_id);
-
-      const siblingCount = trip.series_id
-        ? await prisma.trip.count({
-            where: { series_id: trip.series_id, status: { not: 'cancelled' } },
-          })
-        : 1;
-
+      const isOnly = trip.series_id ? (activeBySeries.get(trip.series_id) ?? 1) === 1 : true;
       return {
         ...trip,
         price: price ? { amount: price.amount, currency: price.currency } : null,
-        series: {
-          is_only_in_series: siblingCount === 1,
-        },
+        series: { is_only_in_series: isOnly },
       };
     }),
   );
@@ -366,18 +275,48 @@ export const listTrips = async (
   return { trips, total, page, limit };
 };
 
+type TripPatchInput = Partial<{
+  departure_time: string;
+  bus_id: string | null;
+  driver_id: string | null;
+  total_seats: number;
+  is_express: boolean;
+  cancellation_allowed: boolean;
+}>;
+
+/**
+ * Translate a client patch into a valid Trip update:
+ *  - departure_time (HH:MM, Kigali) → recompute departure_at on the trip's own day
+ *    and arrival_at from its duration (departure_time is NOT a Trip column),
+ *  - total_seats → reconcile available_seats so booked seats are preserved.
+ */
+const buildTripPatch = (
+  trip: { departure_at: Date; duration_minutes: number | null; total_seats: number; available_seats: number },
+  data: TripPatchInput,
+): Prisma.TripUncheckedUpdateInput => {
+  const patch: Prisma.TripUncheckedUpdateInput = {};
+  if (data.bus_id !== undefined) patch.bus_id = data.bus_id;
+  if (data.driver_id !== undefined) patch.driver_id = data.driver_id;
+  if (data.is_express !== undefined) patch.is_express = data.is_express;
+  if (data.cancellation_allowed !== undefined) patch.cancellation_allowed = data.cancellation_allowed;
+  if (data.total_seats !== undefined) {
+    const booked = trip.total_seats - trip.available_seats;
+    patch.total_seats = data.total_seats;
+    patch.available_seats = Math.max(0, data.total_seats - booked);
+  }
+  if (data.departure_time !== undefined) {
+    const dep = localWallTimeToUtc(utcToLocalDay(trip.departure_at), data.departure_time);
+    patch.departure_at = dep;
+    if (trip.duration_minutes) patch.arrival_at = new Date(dep.getTime() + trip.duration_minutes * 60_000);
+  }
+  return patch;
+};
+
 export const updateTrip = async (
   user: AuthenticatedUser,
   id: string,
   scope: 'this' | 'future',
-  data: Partial<{
-    departure_time: string;
-    bus_id: string | null;
-    driver_id: string | null;
-    total_seats: number;
-    is_express: boolean;
-    cancellation_allowed: boolean;
-  }>,
+  data: TripPatchInput,
 ) => {
   const trip = await prisma.trip.findUnique({ where: { id } });
   if (!trip) throw new AppError('TRIP_NOT_FOUND', 404);
@@ -386,7 +325,7 @@ export const updateTrip = async (
   if (scope === 'this') {
     const updated = await prisma.trip.update({
       where: { id },
-      data,
+      data: buildTripPatch(trip, data),
       include: tripWithDetails,
     });
 
@@ -416,7 +355,7 @@ export const updateTrip = async (
       skipped.push({ trip_id: t.id, departure_at: t.departure_at, reason: 'HAS_BOOKINGS' });
       continue;
     }
-    await prisma.trip.update({ where: { id: t.id }, data });
+    await prisma.trip.update({ where: { id: t.id }, data: buildTripPatch(t, data) });
     updated.push(t.id);
   }
 
@@ -425,6 +364,38 @@ export const updateTrip = async (
   });
 
   return { updated: updated.length, skipped };
+};
+
+/**
+ * Cancel one trip and make every confirmed passenger whole: mark their tickets
+ * cancelled and emit a refund request (payment-service refunds + notifies) plus a
+ * trip.cancelled domain event. Returns how many tickets were refunded.
+ */
+const cancelOneTrip = async (
+  trip: { id: string; org_id: string },
+  reason: string | undefined,
+): Promise<number> => {
+  await prisma.trip.update({ where: { id: trip.id }, data: { status: 'cancelled' } });
+
+  const tickets = await prisma.ticket.findMany({ where: { trip_id: trip.id, status: 'confirmed' } });
+  for (const tk of tickets) {
+    await prisma.ticket.update({
+      where: { id: tk.id },
+      data: { status: 'cancelled', cancelled_at: new Date(), cancellation_reason: reason ?? 'TRIP_CANCELLED' },
+    });
+    publishRefundRequested({
+      ticket_id: tk.id,
+      payment_ref: tk.payment_ref,
+      ticket_price: tk.ticket_price,
+      user_id: tk.user_id,
+      phone: tk.passenger_phone,
+      payment_method: tk.payment_method,
+      reason: 'TRIP_CANCELLED',
+    });
+  }
+
+  publishTripEvent({ type: 'trip.cancelled', trip_id: trip.id, org_id: trip.org_id, reason });
+  return tickets.length;
 };
 
 export const cancelTrip = async (
@@ -438,17 +409,17 @@ export const cancelTrip = async (
   if (!buildAbilityFromRules(user.rules).can('cancel', subject('Trip', trip) as unknown as Subjects)) throw new AppError('FORBIDDEN', 403);
 
   if (scope === 'this') {
-    await prisma.trip.update({ where: { id }, data: { status: 'cancelled' } });
-
+    const refunded = await cancelOneTrip(trip, reason);
     setImmediate(() => {
-      publishAudit({ actor_id: user.id, action: 'cancel', resource: 'Trip', resource_id: id });
+      publishAudit({ actor_id: user.id, action: 'cancel', resource: 'Trip', resource_id: id, delta: reason ? { reason: { from: null, to: reason } } : undefined });
     });
-
-    return { deleted: 1, skipped: [] };
+    return { cancelled: 1, refunded };
   }
 
   if (!trip.series_id) throw new AppError('TRIP_NOT_IN_SERIES', 400);
 
+  // Cancel this and every later scheduled instance, refunding confirmed passengers
+  // on each — no silent skipping that would strand paying riders.
   const futureTrips = await prisma.trip.findMany({
     where: {
       series_id: trip.series_id,
@@ -457,24 +428,18 @@ export const cancelTrip = async (
     },
   });
 
-  const deleted: string[] = [];
-  const skipped: Array<{ trip_id: string; departure_at: Date; reason: string }> = [];
-
+  let refunded = 0;
   for (const t of futureTrips) {
-    const hasBookings = await prisma.ticket.count({ where: { trip_id: t.id, status: 'confirmed' } });
-    if (hasBookings > 0) {
-      skipped.push({ trip_id: t.id, departure_at: t.departure_at, reason: 'HAS_BOOKINGS' });
-      continue;
-    }
-    await prisma.trip.update({ where: { id: t.id }, data: { status: 'cancelled' } });
-    deleted.push(t.id);
+    refunded += await cancelOneTrip(t, reason);
   }
+  // Pause the series so the scheduler stops materializing new instances.
+  await prisma.tripSeries.update({ where: { id: trip.series_id }, data: { status: 'paused' } });
 
   setImmediate(() => {
     publishAudit({ actor_id: user.id, action: 'cancel', resource: 'Trip', resource_id: id, delta: reason ? { reason: { from: null, to: reason } } : undefined });
   });
 
-  return { deleted: deleted.length, skipped };
+  return { cancelled: futureTrips.length, refunded };
 };
 
 export const activateTrip = async (user: AuthenticatedUser, id: string) => {
@@ -514,6 +479,3 @@ export const completeTrip = async (user: AuthenticatedUser, id: string) => {
 
   return { id };
 };
-
-// Suppress unused import warning
-void isOnlyInSeries;

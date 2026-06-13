@@ -115,10 +115,13 @@ export const materializeSeries = async (series: TripSeries, until: Date = horizo
       is_express: series.is_express,
     }));
 
+    // skipDuplicates makes this idempotent against the (series_id, departure_at)
+    // unique — safe to re-run, and safe for series migrated from the old eager
+    // generator (materialized_until=null) whose instances already exist.
     for (let i = 0; i < rows.length; i += CREATE_BATCH) {
       const batch = rows.slice(i, i + CREATE_BATCH);
-      await prisma.trip.createMany({ data: batch });
-      created += batch.length;
+      const { count } = await prisma.trip.createMany({ data: batch, skipDuplicates: true });
+      created += count;
     }
   }
 

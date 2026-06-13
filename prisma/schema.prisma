@@ -316,6 +316,10 @@ model Trip {
   series  TripSeries?  @relation(fields: [series_id], references: [id])
   tickets Ticket[]
 
+  // One instance per series per departure — makes (re)materialization idempotent
+  // (createMany skipDuplicates). Standalone trips have series_id = null, which
+  // Postgres treats as distinct, so they're unaffected.
+  @@unique([series_id, departure_at])
   @@index([departure_at, status])
   @@index([route_id, departure_at])
   @@index([org_id, status])

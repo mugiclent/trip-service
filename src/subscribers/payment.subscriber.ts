@@ -3,6 +3,17 @@ import { getRedisClient } from '../loaders/redis.js';
 import { prisma } from '../models/index.js';
 import { seatHoldQueue, smsCoordQueue, smsReminderQueue } from '../loaders/bullmq.js';
 import { publishRefundRequested, publishTicketConfirmed } from '../utils/publishers.js';
+import { bookingStatusKey, BOOKING_STATUS_TTL } from '../utils/booking-status.js';
+
+// Deliver a terminal booking outcome to the SSE stream: persist it (so a client that
+// connects/reconnects within the payment window replays it — fixes the lost-event race)
+// AND publish it (for a client already streaming).
+const emitBookingOutcome = async (ticketId: string, payload: object): Promise<void> => {
+  const body = JSON.stringify(payload);
+  const redis = getRedisClient();
+  await redis.set(bookingStatusKey(ticketId), body, 'EX', BOOKING_STATUS_TTL);
+  await redis.publish(`booking:${ticketId}`, body);
+};
 
 // Shapes as emitted by payment-service: camelCase, dispatched by AMQP routing
 // key (no `type` field in the body).
@@ -62,29 +73,26 @@ const handlePaymentConfirmed = async (event: PaymentConfirmedEvent): Promise<voi
   const job = await seatHoldQueue.getJob(`seat-hold-${ticket.id}`);
   if (job) await job.remove();
 
-  await getRedisClient().publish(
-    `booking:${ticket.id}`,
-    JSON.stringify({
+  await emitBookingOutcome(ticket.id, {
+    status: 'confirmed',
+    ticket: {
+      id: ticket.id,
       status: 'confirmed',
-      ticket: {
-        id: ticket.id,
-        status: 'confirmed',
-        payment_method: ticket.payment_method,
-        ticket_price: ticket.ticket_price,
-        currency: 'RWF',
-        seats_count: ticket.seats_count,
-        passenger_name: ticket.passenger_name,
-        passenger_phone: ticket.passenger_phone ? ticket.passenger_phone.replace(/(\+250\d{3})\d{3}(\d{3})/, '$1***$2') : null,
-        boarding_stop: { id: ticket.boarding_stop.id, name: ticket.boarding_stop.name },
-        alighting_stop: { id: ticket.alighting_stop.id, name: ticket.alighting_stop.name },
-        departure_at: ticket.trip.departure_at,
-        arrival_at: ticket.trip.arrival_at,
-        duration_minutes: ticket.trip.duration_minutes,
-        org: { name: ticket.org.name, logo_path: ticket.org.logo_path },
-        confirmed_at: confirmedAt,
-      },
-    }),
-  );
+      payment_method: ticket.payment_method,
+      ticket_price: ticket.ticket_price,
+      currency: 'RWF',
+      seats_count: ticket.seats_count,
+      passenger_name: ticket.passenger_name,
+      passenger_phone: ticket.passenger_phone ? ticket.passenger_phone.replace(/(\+250\d{3})\d{3}(\d{3})/, '$1***$2') : null,
+      boarding_stop: { id: ticket.boarding_stop.id, name: ticket.boarding_stop.name },
+      alighting_stop: { id: ticket.alighting_stop.id, name: ticket.alighting_stop.name },
+      departure_at: ticket.trip.departure_at,
+      arrival_at: ticket.trip.arrival_at,
+      duration_minutes: ticket.trip.duration_minutes,
+      org: { name: ticket.org.name, logo_path: ticket.org.logo_path },
+      confirmed_at: confirmedAt,
+    },
+  });
 
   publishTicketConfirmed({
     ticket_id: ticket.id,
@@ -164,15 +172,12 @@ const handlePaymentFailed = async (event: PaymentFailedEvent): Promise<void> => 
   const job = await seatHoldQueue.getJob(`seat-hold-${event.ticketId}`);
   if (job) await job.remove();
 
-  await getRedisClient().publish(
-    `booking:${event.ticketId}`,
-    JSON.stringify({
-      status: 'failed',
-      reason: event.reason,
-      retryable: event.retryable,
-      ...(event.available !== undefined ? { available: event.available, required: event.required, shortfall: event.shortfall } : {}),
-    }),
-  );
+  await emitBookingOutcome(event.ticketId, {
+    status: 'failed',
+    reason: event.reason,
+    retryable: event.retryable,
+    ...(event.available !== undefined ? { available: event.available, required: event.required, shortfall: event.shortfall } : {}),
+  });
 };
 
 export const initPaymentSubscriber = async (ch: Channel): Promise<void> => {

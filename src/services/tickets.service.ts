@@ -5,6 +5,7 @@ import { AppError } from '../utils/AppError.js';
 import { publishPaymentRequested, publishRefundRequested, publishAudit } from '../utils/publishers.js';
 import { seatHoldQueue } from '../loaders/bullmq.js';
 import { getRedisClient } from '../loaders/redis.js';
+import { bookingMetaKey } from '../utils/booking-status.js';
 import { detectNetwork } from '../utils/phone.js';
 import { buildAbilityFromRules, getScopeFor, accessibleWhere } from '../utils/ability.js';
 import type { AuthenticatedUser } from '../utils/ability.js';
@@ -12,6 +13,24 @@ import { getEffectivePrice } from './prices.service.js';
 
 const WALLET_TTL_MS = 30_000;
 const MOMO_TTL_MS = 180_000;
+
+// Seed the cache the SSE stream reads instead of the DB. TTL is the booking's payment
+// window, so the key is live exactly while the ticket can be pending. Best-effort: if
+// this write fails the booking still succeeds, but its live stream will 404 until the
+// payment outcome is known — the client just polls the REST endpoint instead.
+const cacheBookingMeta = (
+  ticket: { id: string; user_id: string | null; payment_method: string },
+  ttlSeconds: number,
+): void => {
+  void getRedisClient()
+    .set(
+      bookingMetaKey(ticket.id),
+      JSON.stringify({ user_id: ticket.user_id, payment_method: ticket.payment_method }),
+      'EX',
+      ttlSeconds,
+    )
+    .catch(() => {});
+};
 
 const ticketWithDetails = {
   trip: { include: { route: true, bus: true } },
@@ -94,6 +113,8 @@ export const bookWalletTicket = async (
     });
   });
 
+  cacheBookingMeta(ticket, WALLET_TTL_MS / 1000);
+
   await seatHoldQueue.add(
     'expire-seat-hold',
     { ticket_id: ticket.id, trip_id: data.trip_id, seats_count: data.seats_count },
@@ -160,6 +181,8 @@ export const bookMomoTicket = async (data: {
     });
   });
 
+  cacheBookingMeta(ticket, MOMO_TTL_MS / 1000);
+
   await seatHoldQueue.add(
     'expire-seat-hold',
     { ticket_id: ticket.id, trip_id: data.trip_id, seats_count: data.seats_count },
@@ -223,6 +246,8 @@ export const bookCashTicket = async (
       },
     });
   });
+
+  cacheBookingMeta(ticket, WALLET_TTL_MS / 1000);
 
   await seatHoldQueue.add(
     'expire-seat-hold',

@@ -19,9 +19,22 @@ export const list = async (req: Request, res: Response, next: NextFunction): Pro
   } catch (err) { next(err); }
 };
 
+// GET /prices is a collection endpoint:
+//   • both boarding_stop_id + alighting_stop_id  → a single fare  { price }
+//   • neither                                    → the full list  { prices, count }
+//   • exactly one                                → 400 (incomplete pair)
 export const get = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { boarding_stop_id, alighting_stop_id } = req.query as { boarding_stop_id: string; alighting_stop_id: string };
+    const { boarding_stop_id, alighting_stop_id } = req.query as { boarding_stop_id?: string; alighting_stop_id?: string };
+    if (!boarding_stop_id && !alighting_stop_id) {
+      const prices = await pricesService.listEffectivePrices(actingOrg(req));
+      res.status(200).json({ prices, count: prices.length });
+      return;
+    }
+    if (!boarding_stop_id || !alighting_stop_id) {
+      res.status(400).json({ error: { code: 'INCOMPLETE_STOP_PAIR', message: 'Provide both boarding_stop_id and alighting_stop_id, or neither.' } });
+      return;
+    }
     const price = await pricesService.getPrice(actingOrg(req), boarding_stop_id, alighting_stop_id);
     res.status(200).json({ price });
   } catch (err) { next(err); }

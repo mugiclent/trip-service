@@ -104,6 +104,7 @@ model StaffUser {
   trip_series     TripSeries[]
   trips           Trip[]
   created_tickets Ticket[]
+  buses           Bus[]
 
   @@index([org_id])
   @@map("staff_users")
@@ -176,6 +177,7 @@ model Route {
   route_stops      RouteStop[]
   trip_series      TripSeries[]
   trips            Trip[]
+  buses            Bus[]         @relation("BusRoutes")
 
   // Per-org-scoped slug uniqueness; a partial unique index (in the migration)
   // enforces one default per slug (org_id IS NULL).
@@ -238,6 +240,10 @@ model Price {
 model Bus {
   id           String   @id @default(uuid())
   org_id       String
+  // Default driver suggested for this bus during trip creation. Per-trip
+  // assignment (Trip.driver_id / TripSeries.driver_id) still wins; this is the
+  // fleet-level default, nullable so it can be cleared.
+  driver_id    String?
   plate        String   @unique @db.VarChar(20)
   type         String   @db.VarChar(100)
   total_seats  Int
@@ -246,10 +252,14 @@ model Bus {
   updated_at   DateTime @updatedAt
 
   org         Organisation @relation(fields: [org_id], references: [id])
+  driver      StaffUser?   @relation(fields: [driver_id], references: [id])
+  // Routes this bus is suggested for during trip creation (many-to-many).
+  routes      Route[]      @relation("BusRoutes")
   trip_series TripSeries[]
   trips       Trip[]
 
   @@index([org_id])
+  @@index([driver_id])
   @@map("buses")
 }
 

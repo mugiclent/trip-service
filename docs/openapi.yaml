@@ -307,6 +307,96 @@ components:
         total_seats: { type: integer, example: 30 }
         is_active: { type: boolean, example: true }
 
+    BusDetail:
+      type: object
+      description: Full bus detail — fleet view with default driver, suggested routes and org.
+      properties:
+        id: { type: string, format: uuid, example: 'd4e5f6a7-0000-0000-0000-000000000004' }
+        plate: { type: string, example: RAA 001 A }
+        type: { type: string, example: Coach }
+        capacity: { type: integer, example: 30 }
+        status: { type: string, enum: [active, inactive], example: active }
+        driver:
+          type: object
+          nullable: true
+          description: Default driver suggested during trip creation; null when unassigned.
+          properties:
+            id: { type: string, format: uuid }
+            first_name: { type: string, example: Jean }
+            last_name: { type: string, example: Uwimana }
+            avatar_path: { type: string, nullable: true, example: avatars/user-id/uuid.jpg }
+        routes:
+          type: array
+          description: Routes this bus is suggested for during trip creation.
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string, example: 'Kigali — Gisenyi' }
+        org:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string, example: Volcano Express }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    BusTrip:
+      type: object
+      description: An upcoming trip assigned to a bus, with occupancy figures.
+      properties:
+        id: { type: string, format: uuid }
+        departure_at: { type: string, format: date-time, example: '2026-04-20T06:00:00.000Z' }
+        status: { type: string, enum: [scheduled, active, completed, cancelled], example: scheduled }
+        route:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string, example: 'Kigali — Gisenyi' }
+        booked_seats: { type: integer, example: 12 }
+        total_seats: { type: integer, example: 30 }
+        remaining_seats: { type: integer, example: 18 }
+
+    PaginatedBusTrips:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/BusTrip' } }
+        total: { type: integer, example: 4 }
+        page: { type: integer, example: 1 }
+        limit: { type: integer, example: 20 }
+
+    BusListItem:
+      type: object
+      description: A bus card in the fleet list (no routes / updated_at — see BusDetail).
+      properties:
+        id: { type: string, format: uuid }
+        plate: { type: string, example: RAA 001 A }
+        type: { type: string, example: Coach }
+        capacity: { type: integer, example: 30 }
+        status: { type: string, enum: [active, inactive], example: active }
+        driver:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string, format: uuid }
+            first_name: { type: string, example: Jean }
+            last_name: { type: string, example: Uwimana }
+            avatar_path: { type: string, nullable: true, example: avatars/user-id/uuid.jpg }
+        org:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string, example: Volcano Express }
+        created_at: { type: string, format: date-time }
+
+    PaginatedBuses:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/BusListItem' } }
+        total: { type: integer, example: 8 }
+        page: { type: integer, example: 1 }
+        limit: { type: integer, example: 20 }
+
     Trip:
       type: object
       properties:
@@ -867,42 +957,73 @@ paths:
       tags: [Buses]
       summary: List buses
       description: |
-        Requires `read` on `Bus`. Returns the caller's org's fleet.
-        Platform-admin sees all buses across all orgs.
+        Requires `read` on `Bus`. Returns a paginated, filterable list of the caller's
+        org fleet. Platform-scope callers see all orgs and may narrow with `org_id`;
+        org-scope callers are always pinned to their own org (`org_id` is ignored).
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+          description: Case-insensitive match on plate or bus type.
+        - in: query
+          name: status
+          schema: { type: string, enum: [active, inactive] }
+        - in: query
+          name: driver_id
+          schema: { type: string, format: uuid }
+          description: Filter to buses whose default driver is this staff user.
+        - in: query
+          name: org_id
+          schema: { type: string, format: uuid }
+          description: '**Platform scope only.** Narrow to a single org.'
+        - $ref: '#/components/parameters/QueryPage'
+        - $ref: '#/components/parameters/QueryLimit'
       responses:
         '200':
-          description: Bus list
+          description: Paginated bus list
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  buses: { type: array, items: { $ref: '#/components/schemas/Bus' } }
+              schema: { $ref: '#/components/schemas/PaginatedBuses' }
     post:
       tags: [Buses]
       summary: Register bus
-      description: Requires `create` on `Bus`.
+      description: |
+        Requires `create` on `Bus`. Org-scope callers create within their own org;
+        platform-scope callers must supply `org_id`.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [plate, type, total_seats]
+              required: [plate, type, capacity]
               properties:
-                plate: { type: string, maxLength: 20, example: RAB 123 A }
-                type: { type: string, maxLength: 100, example: Coaster }
-                total_seats: { type: integer, minimum: 1, example: 30 }
+                plate: { type: string, maxLength: 20, example: RAA 001 A }
+                type: { type: string, maxLength: 100, example: Coach }
+                capacity: { type: integer, minimum: 1, example: 30 }
+                driver_id: { type: string, format: uuid, nullable: true, description: Optional default driver. }
+                route_ids:
+                  type: array
+                  items: { type: string, format: uuid }
+                  description: Optional suggested routes for trip creation.
+                org_id: { type: string, format: uuid, description: '**Platform scope only.** Target org.' }
       responses:
         '201':
           description: Bus registered
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  bus: { $ref: '#/components/schemas/Bus' }
+              schema: { $ref: '#/components/schemas/BusDetail' }
         '403': { description: Forbidden }
+        '404':
+          description: Driver or route not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Plate already exists (`PLATE_ALREADY_EXISTS`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /buses/{id}:
     parameters:
@@ -910,21 +1031,20 @@ paths:
     get:
       tags: [Buses]
       summary: Get bus
-      description: Requires `read` on `Bus`.
+      description: Requires `read` on `Bus`. Returns the full detail view (driver, routes, org).
       responses:
         '200':
-          description: Bus
+          description: Bus detail
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  bus: { $ref: '#/components/schemas/Bus' }
+              schema: { $ref: '#/components/schemas/BusDetail' }
         '404': { description: Not found }
     patch:
       tags: [Buses]
       summary: Update bus
-      description: Requires `update` on `Bus`.
+      description: |
+        Requires `update` on `Bus`. `driver_id: null` removes the driver; `route_ids`
+        fully replaces the assigned route set.
       requestBody:
         required: true
         content:
@@ -935,19 +1055,29 @@ paths:
               properties:
                 plate: { type: string, maxLength: 20 }
                 type: { type: string, maxLength: 100 }
-                total_seats: { type: integer, minimum: 1 }
-                is_active: { type: boolean }
+                capacity: { type: integer, minimum: 1 }
+                status: { type: string, enum: [active, inactive] }
+                driver_id: { type: string, format: uuid, nullable: true }
+                route_ids:
+                  type: array
+                  items: { type: string, format: uuid }
       responses:
         '200':
-          description: Updated bus
+          description: Updated bus (same shape as GET)
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  bus: { $ref: '#/components/schemas/Bus' }
+              schema: { $ref: '#/components/schemas/BusDetail' }
         '403': { description: Forbidden }
-        '404': { description: Not found }
+        '404':
+          description: Bus, driver, or route not found (`DRIVER_NOT_FOUND` / `ROUTE_NOT_FOUND`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Plate already exists (`PLATE_ALREADY_EXISTS`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
     delete:
       tags: [Buses]
       summary: Deregister bus
@@ -955,6 +1085,29 @@ paths:
       responses:
         '204': { description: Deleted }
         '403': { description: Forbidden }
+        '404': { description: Not found }
+        '409':
+          description: Bus assigned to upcoming trips (`BUS_IN_USE`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /buses/{id}/trips:
+    parameters:
+      - $ref: '#/components/parameters/PathId'
+    get:
+      tags: [Buses]
+      summary: List a bus's upcoming trips
+      description: Requires `read` on `Bus`. Paginated upcoming trips assigned to this bus, with occupancy.
+      parameters:
+        - $ref: '#/components/parameters/QueryPage'
+        - $ref: '#/components/parameters/QueryLimit'
+      responses:
+        '200':
+          description: Paginated upcoming trips
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaginatedBusTrips' }
         '404': { description: Not found }
 
   # ── Trips ────────────────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import * as ticketsService from '../services/tickets.service.js';
 import { streamTicketStatus } from '../services/sse.service.js';
+import { buildAbilityFromRules } from '../utils/ability.js';
 import type { AuthenticatedUser } from '../utils/ability.js';
 import { AppError } from '../utils/AppError.js';
 import { consumeSudoToken } from '../middleware/consumeSudoToken.js';
@@ -14,17 +15,38 @@ export const book = async (req: Request, res: Response, next: NextFunction): Pro
       boarding_stop_id: string;
       alighting_stop_id: string;
       seats_count?: number;
-      payment_method?: 'mtn' | 'airtel';
+      payment_method?: 'wallet' | 'mtn' | 'airtel' | 'cash';
       phone?: string;
       passenger_name?: string;
     };
 
     const seatsCount = body.seats_count ?? 1;
 
-    if (user) {
-      // Wallet purchase (authenticated path). Passengers must step up — spending
-      // real money from their wallet requires a fresh password re-auth (≤3 min,
-      // single-use sudo token). Staff are exempt (they sell via /cash, not wallet).
+    // Cash — staff walk-in sale. Requires an authenticated caller with create:Ticket.
+    if (body.payment_method === 'cash') {
+      if (!user) return next(new AppError('UNAUTHENTICATED', 401));
+      if (!buildAbilityFromRules(user.rules).can('create', 'Ticket')) return next(new AppError('FORBIDDEN', 403));
+      if (!body.passenger_name) return next(new AppError('VALIDATION_ERROR', 422, 'passenger_name required for cash ticket'));
+      const result = await ticketsService.bookCashTicket(user, {
+        trip_id: body.trip_id,
+        boarding_stop_id: body.boarding_stop_id,
+        alighting_stop_id: body.alighting_stop_id,
+        seats_count: seatsCount,
+        passenger_name: body.passenger_name,
+        passenger_phone: body.phone,
+      });
+      res.status(202).json(result);
+      return;
+    }
+
+    // Wallet — authenticated purchase. An authenticated passenger omitting
+    // payment_method defaults here for back-compat; otherwise it must be explicit.
+    const method = body.payment_method ?? (user?.user_type === 'passenger' ? 'wallet' : undefined);
+
+    if (method === 'wallet') {
+      if (!user) return next(new AppError('UNAUTHENTICATED', 401));
+      // Passengers must step up — spending real wallet money requires a fresh
+      // password re-auth (≤3 min, single-use sudo token).
       if (user.user_type === 'passenger') {
         await consumeSudoToken(
           req.headers['x-sudo-token'] as string | undefined,
@@ -33,11 +55,8 @@ export const book = async (req: Request, res: Response, next: NextFunction): Pro
           getRedisClient(),
         );
       }
-
-      // Wallet is the authenticated-passenger path: their account already holds a
-      // verified phone, so we never force it in the request. (Wiring that account
-      // phone onto the ticket — needed for the confirmation SMS — is still TODO;
-      // until then wallet tickets carry no phone and send no SMS.)
+      // The account already holds a verified phone, so we never force it in the
+      // request. (Wiring that phone onto the ticket for the confirmation SMS is TODO.)
       const result = await ticketsService.bookWalletTicket(user, {
         trip_id: body.trip_id,
         boarding_stop_id: body.boarding_stop_id,
@@ -45,27 +64,22 @@ export const book = async (req: Request, res: Response, next: NextFunction): Pro
         seats_count: seatsCount,
       });
       res.status(202).json(result);
-    } else {
-      if (!body.phone || !body.passenger_name) {
-        return next(new AppError('VALIDATION_ERROR', 422, 'phone and passenger_name required for guest booking'));
-      }
-      const result = await ticketsService.bookMomoTicket({
-        trip_id: body.trip_id,
-        boarding_stop_id: body.boarding_stop_id,
-        alighting_stop_id: body.alighting_stop_id,
-        seats_count: seatsCount,
-        phone: body.phone,
-        passenger_name: body.passenger_name,
-      });
-      res.status(202).json(result);
+      return;
     }
-  } catch (err) { next(err); }
-};
 
-export const bookCash = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-  try {
-    const user = req.user as AuthenticatedUser;
-    const result = await ticketsService.bookCashTicket(user, req.body as Parameters<typeof ticketsService.bookCashTicket>[1]);
+    // mtn | airtel — mobile money (guest or passenger); the provider is verified
+    // from the phone number.
+    if (!body.phone || !body.passenger_name) {
+      return next(new AppError('VALIDATION_ERROR', 422, 'phone and passenger_name required for mobile-money booking'));
+    }
+    const result = await ticketsService.bookMomoTicket({
+      trip_id: body.trip_id,
+      boarding_stop_id: body.boarding_stop_id,
+      alighting_stop_id: body.alighting_stop_id,
+      seats_count: seatsCount,
+      phone: body.phone,
+      passenger_name: body.passenger_name,
+    });
     res.status(202).json(result);
   } catch (err) { next(err); }
 };
@@ -113,6 +127,19 @@ export const listOrg = async (req: Request, res: Response, next: NextFunction): 
   try {
     const user = req.user as AuthenticatedUser;
     const result = await ticketsService.listTickets(user, req.query as Parameters<typeof ticketsService.listTickets>[1]);
+    res.status(200).json(result);
+  } catch (err) { next(err); }
+};
+
+// GET /trips/:id/tickets — paginated ticket list for the trip detail screen.
+export const listForTrip = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const user = req.user as AuthenticatedUser;
+    const result = await ticketsService.listTripTickets(
+      user,
+      req.params['id'] as string,
+      req.query as Parameters<typeof ticketsService.listTripTickets>[2],
+    );
     res.status(200).json(result);
   } catch (err) { next(err); }
 };

@@ -9,14 +9,20 @@ import * as ctrl from '../controllers/routes.controller.js';
 const router = Router();
 
 const createSchema = Joi.object({
-  stop_ids: Joi.array().items(Joi.string().uuid()).min(2).required(),
   name: Joi.string().max(255).optional(),
+  // Count is checked in the service so a sub-2 list returns INSUFFICIENT_STOPS.
+  stops: Joi.array()
+    .items(Joi.object({ location_id: Joi.string().uuid().required(), order: Joi.number().integer().min(1).required() }))
+    .required(),
   org_id: Joi.string().uuid().optional(),
 });
 
 const updateSchema = Joi.object({
   name: Joi.string().max(255).optional(),
-  is_active: Joi.boolean().optional(),
+  status: Joi.string().valid('active', 'inactive').optional(),
+  stops: Joi.array()
+    .items(Joi.object({ location_id: Joi.string().uuid().required(), order: Joi.number().integer().min(1).required() }))
+    .optional(),
 }).min(1);
 
 const addStopSchema = Joi.object({

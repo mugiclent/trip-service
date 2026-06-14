@@ -127,6 +127,7 @@ model Stop {
   lat         Decimal  @db.Decimal(10, 7)
   lng         Decimal  @db.Decimal(10, 7)
   city        String?  @db.VarChar(255)
+  province    String?  @db.VarChar(255)
   created_at  DateTime @default(now())
   updated_at  DateTime @updatedAt
 

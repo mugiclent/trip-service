@@ -1,8 +1,10 @@
 import { prisma } from '../models/index.js';
+import { Prisma } from '../models/index.js';
 import type { Route } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { slugify } from '../utils/slugify.js';
 import { candidateWhere, resolveEffective } from '../utils/overrides.js';
+import { listEffectivePrices } from './prices.service.js';
 
 /**
  * Routes follow the copy-on-write override pattern (see src/utils/overrides.ts). The
@@ -56,15 +58,69 @@ const ensureOrgRoute = async (orgId: string | null, id: string): Promise<string>
   throw new AppError('ROUTE_NOT_FOUND', 404);
 };
 
+type RouteDetail = Prisma.RouteGetPayload<{ include: typeof routeWithDetails }>;
+
+// Card-shaped detail payload: status (← is_active) and a flat ordered stop list.
+export const serializeRouteDetail = (route: RouteDetail) => ({
+  id: route.id,
+  name: route.name,
+  status: route.is_active ? 'active' : 'inactive',
+  stops: route.route_stops.map((rs) => ({
+    id: rs.id,
+    location_id: rs.stop_id,
+    name: rs.stop.name,
+    lat: Number(rs.stop.lat),
+    lng: Number(rs.stop.lng),
+    order: rs.order,
+  })),
+  created_at: route.created_at,
+});
+
+/**
+ * A route's prices are "complete" when every boardable stop-pair (i < j in route
+ * order) has an effective fare for `orgId`. Required before a route can be activated.
+ */
+const pricesComplete = async (orgId: string | null, route: RouteDetail): Promise<boolean> => {
+  const stops = route.route_stops; // already ordered ascending
+  if (stops.length < 2) return false;
+  const prices = await listEffectivePrices(orgId);
+  const have = new Set(prices.map((p) => `${p.boarding_stop_id}|${p.alighting_stop_id}`));
+  for (let i = 0; i < stops.length; i++) {
+    for (let j = i + 1; j < stops.length; j++) {
+      if (!have.has(`${stops[i].stop_id}|${stops[j].stop_id}`)) return false;
+    }
+  }
+  return true;
+};
+
+// Full detail payload = the create shape plus org, prices_complete and updated_at.
+export const serializeRouteFull = async (orgId: string | null, route: RouteDetail) => ({
+  ...serializeRouteDetail(route),
+  org: route.org ? { id: route.org.id, name: route.org.name } : null,
+  prices_complete: await pricesComplete(orgId, route),
+  updated_at: route.updated_at,
+});
+
+// Card-shaped list-card payload: status, stop count and origin/destination summary.
+export const serializeRouteListItem = (route: RouteDetail) => ({
+  id: route.id,
+  name: route.name,
+  status: route.is_active ? 'active' : 'inactive',
+  stops_count: route.route_stops.length,
+  origin: { id: route.origin_stop.id, name: route.origin_stop.name },
+  destination: { id: route.destination_stop.id, name: route.destination_stop.name },
+  created_at: route.created_at,
+});
+
 export const createRoute = async (data: {
   org_id: string | null;
   stop_ids: string[];
   name?: string;
-}) => {
-  if (data.stop_ids.length < 2) throw new AppError('INVALID_ROUTE', 400);
+}): Promise<RouteDetail> => {
+  if (data.stop_ids.length < 2) throw new AppError('INSUFFICIENT_STOPS', 422);
 
   const stops = await prisma.stop.findMany({ where: { id: { in: data.stop_ids } } });
-  if (stops.length !== data.stop_ids.length) throw new AppError('STOP_NOT_FOUND', 404);
+  if (stops.length !== new Set(data.stop_ids).size) throw new AppError('STOP_NOT_FOUND', 404);
 
   const orderedStops = data.stop_ids.map((id) => stops.find((s) => s.id === id)!);
   const origin = orderedStops[0];
@@ -72,19 +128,31 @@ export const createRoute = async (data: {
   const name = data.name ?? `${origin.name} — ${destination.name}`;
   const slug = slugify(name);
 
-  return prisma.route.create({
-    data: {
-      org_id: data.org_id,
-      name,
-      slug,
-      origin_stop_id: origin.id,
-      destination_stop_id: destination.id,
-      route_stops: {
-        create: orderedStops.map((stop, index) => ({ stop_id: stop.id, order: index + 1 })),
+  try {
+    // New routes start inactive — they can't be activated until every stop-pair price
+    // is defined (enforced on activation, not here).
+    return await prisma.route.create({
+      data: {
+        org_id: data.org_id,
+        name,
+        slug,
+        is_active: false,
+        origin_stop_id: origin.id,
+        destination_stop_id: destination.id,
+        route_stops: {
+          create: orderedStops.map((stop, index) => ({ stop_id: stop.id, order: index + 1 })),
+        },
       },
-    },
-    include: routeWithDetails,
-  });
+      include: routeWithDetails,
+    });
+  } catch (err) {
+    // Route slug is unique per org (and per platform default) — a clash means the
+    // name is already taken.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      throw new AppError('ROUTE_ALREADY_EXISTS', 409);
+    }
+    throw err;
+  }
 };
 
 /** Effective route catalog for `orgId`: defaults with the org's forks substituted in. */
@@ -121,10 +189,48 @@ export const getRoute = async (orgId: string | null, id: string) => {
 export const updateRoute = async (
   orgId: string | null,
   id: string,
-  data: Partial<{ name: string; is_active: boolean }>,
-) => {
+  data: Partial<{ name: string; is_active: boolean; stops: { location_id: string; order: number }[] }>,
+): Promise<RouteDetail> => {
   const routeId = await ensureOrgRoute(orgId, id); // forks a default on first edit
-  return prisma.route.update({ where: { id: routeId }, data, include: routeWithDetails });
+
+  const patch: Prisma.RouteUpdateInput = {};
+  if (data.name !== undefined) {
+    patch.name = data.name;
+    patch.slug = slugify(data.name);
+  }
+  if (data.is_active !== undefined) patch.is_active = data.is_active;
+
+  // Full stop-list replacement (drag-and-drop reorder / add / remove).
+  if (data.stops) {
+    if (data.stops.length < 2) throw new AppError('INSUFFICIENT_STOPS', 422);
+    const ordered = [...data.stops].sort((a, b) => a.order - b.order);
+    const stopIds = ordered.map((s) => s.location_id);
+    const found = await prisma.stop.findMany({ where: { id: { in: stopIds } } });
+    if (found.length !== new Set(stopIds).size) throw new AppError('STOP_NOT_FOUND', 404);
+
+    patch.origin_stop = { connect: { id: stopIds[0] } };
+    patch.destination_stop = { connect: { id: stopIds[stopIds.length - 1] } };
+    patch.route_stops = {
+      deleteMany: {},
+      create: ordered.map((s, i) => ({ stop_id: s.location_id, order: i + 1 })),
+    };
+  }
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const updated = await tx.route.update({ where: { id: routeId }, data: patch, include: routeWithDetails });
+      // Activation is gated on a complete price matrix (computed against the new stops).
+      if (data.is_active === true && !(await pricesComplete(orgId, updated))) {
+        throw new AppError('PRICES_INCOMPLETE', 400);
+      }
+      return updated;
+    });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      throw new AppError('ROUTE_ALREADY_EXISTS', 409);
+    }
+    throw err;
+  }
 };
 
 export const deleteRoute = async (orgId: string | null, id: string): Promise<void> => {
@@ -152,7 +258,15 @@ export const deleteRoute = async (orgId: string | null, id: string): Promise<voi
   if (target.org_id === orgId) {
     const inUse = await prisma.trip.count({ where: { route_id: id, status: { in: ['scheduled', 'active'] } } });
     if (inUse > 0) throw new AppError('ROUTE_IN_USE', 409);
-    await prisma.route.delete({ where: { id } });
+    try {
+      await prisma.route.delete({ where: { id } });
+    } catch (err) {
+      // Any lingering reference (a completed trip, a trip series) also blocks deletion.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') {
+        throw new AppError('ROUTE_IN_USE', 409);
+      }
+      throw err;
+    }
     return;
   }
   throw new AppError('ROUTE_NOT_FOUND', 404);

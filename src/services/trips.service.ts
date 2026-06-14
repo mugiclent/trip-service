@@ -1,22 +1,74 @@
 import { prisma } from '../models/index.js';
 import type { Prisma } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
-import { publishAudit, publishRefundRequested, publishTripEvent } from '../utils/publishers.js';
+import { publishAudit } from '../utils/publishers.js';
 import { subject } from '@casl/ability';
 import { buildAbilityFromRules, getScopeFor, accessibleWhere } from '../utils/ability.js';
 import type { AuthenticatedUser, Subjects } from '../utils/ability.js';
 import { getEffectivePrice } from './prices.service.js';
 import { materializeSeries, horizonEnd } from './scheduling.js';
-import { localWallTimeToUtc, utcToLocalDay, localDayBoundsUtc } from '../utils/time.js';
+import { localDayBoundsUtc } from '../utils/time.js';
 
 const VALID_FREQUENCIES = [null, 30, 60, 90, 120, 180, 240];
 
-const tripWithDetails = {
-  org: { select: { id: true, name: true, slug: true, logo_path: true, story: true } },
-  route: { include: { route_stops: { include: { stop: true }, orderBy: { order: 'asc' as const } } } },
+// Calendar/management payload — the tile shape the staff trips screen renders.
+const calendarTripInclude = {
+  series: true,
   bus: { select: { id: true, plate: true, type: true } },
   driver: { select: { id: true, first_name: true, last_name: true, avatar_path: true } },
+  route: { select: { id: true, name: true } },
 } as const;
+
+type CalendarTripRow = Prisma.TripGetPayload<{ include: typeof calendarTripInclude }>;
+
+const dateOnly = (d: Date | null): string | null => (d ? d.toISOString().slice(0, 10) : null);
+
+const serializeCalendarTrip = (trip: CalendarTripRow, isOnlyInSeries: boolean) => ({
+  id: trip.id,
+  departure_at: trip.departure_at,
+  status: trip.status,
+  is_express: trip.is_express,
+  total_seats: trip.total_seats,
+  booked_seats: trip.total_seats - trip.available_seats,
+  remaining_seats: trip.available_seats,
+  series: trip.series
+    ? {
+        id: trip.series.id,
+        frequency_minutes: trip.series.frequency_minutes,
+        repeat_daily: trip.series.repeat_daily,
+        starts_on: dateOnly(trip.series.starts_on),
+        ends_on: dateOnly(trip.series.ends_on),
+        is_only_in_series: isOnlyInSeries,
+      }
+    : null,
+  bus: trip.bus ? { id: trip.bus.id, plate: trip.bus.plate, type: trip.bus.type } : null,
+  driver: trip.driver
+    ? {
+        id: trip.driver.id,
+        first_name: trip.driver.first_name,
+        last_name: trip.driver.last_name,
+        avatar_path: trip.driver.avatar_path,
+      }
+    : null,
+  route: { id: trip.route.id, name: trip.route.name },
+});
+
+// is_only_in_series is a per-series constant (active instances === 1). Resolve it
+// for a batch of trips with one grouped count rather than a query per trip.
+const seriesOnlyResolver = async (
+  trips: { series_id: string | null }[],
+): Promise<(seriesId: string | null) => boolean> => {
+  const ids = [...new Set(trips.map((t) => t.series_id).filter((s): s is string => !!s))];
+  const counts = ids.length
+    ? await prisma.trip.groupBy({
+        by: ['series_id'],
+        where: { series_id: { in: ids }, status: { not: 'cancelled' } },
+        _count: { _all: true },
+      })
+    : [];
+  const bySeries = new Map(counts.map((c) => [c.series_id, c._count._all]));
+  return (seriesId) => (seriesId ? (bySeries.get(seriesId) ?? 1) === 1 : true);
+};
 
 export const createTrips = async (
   user: AuthenticatedUser,
@@ -49,20 +101,31 @@ export const createTrips = async (
   if (!scopedOrgId) throw new AppError('ORG_REQUIRED', 400);
   if (!buildAbilityFromRules(user.rules).can('create', subject('Trip', { org_id: scopedOrgId }) as unknown as Subjects)) throw new AppError('FORBIDDEN', 403);
 
+  // A repeating series (multi-day span or intra-day frequency) has its bus/driver
+  // assigned per trip after creation — ignore anything provided here.
+  const isRepeating = (data.repeat_daily ?? false) || data.frequency_minutes != null;
+  const busId = isRepeating ? null : data.bus_id ?? null;
+  const driverId = isRepeating ? null : data.driver_id ?? null;
+
   let totalSeats = data.total_seats;
-  if (data.bus_id) {
-    const bus = await prisma.bus.findUnique({ where: { id: data.bus_id } });
+  if (busId) {
+    const bus = await prisma.bus.findUnique({ where: { id: busId } });
     if (!bus) throw new AppError('BUS_NOT_FOUND', 404);
-    totalSeats = bus.total_seats;
+    totalSeats = bus.total_seats; // auto-populate from capacity (editable client-side)
   }
-  if (!totalSeats) throw new AppError('TOTAL_SEATS_REQUIRED', 400);
+  if (!totalSeats) throw new AppError('TOTAL_SEATS_REQUIRED', 422);
+
+  if (driverId) {
+    const driver = await prisma.staffUser.findFirst({ where: { id: driverId, org_id: scopedOrgId } });
+    if (!driver) throw new AppError('DRIVER_NOT_FOUND', 404);
+  }
 
   const org = await prisma.organisation.findUnique({ where: { id: scopedOrgId } });
   if (!org) throw new AppError('ORG_NOT_FOUND', 404);
 
   const startsOn = new Date(data.starts_on);
   const endsOn = data.ends_on ? new Date(data.ends_on) : null;
-  if (endsOn && endsOn.getTime() < startsOn.getTime()) throw new AppError('INVALID_DATE_RANGE', 400);
+  if (endsOn && endsOn.getTime() < startsOn.getTime()) throw new AppError('INVALID_DATE_RANGE', 422);
 
   // `org` is fetched above; cancellation_allowed flows into each trip via materializeSeries.
   void org;
@@ -71,8 +134,8 @@ export const createTrips = async (
     data: {
       org_id: scopedOrgId,
       route_id: data.route_id,
-      bus_id: data.bus_id ?? null,
-      driver_id: data.driver_id ?? null,
+      bus_id: busId,
+      driver_id: driverId,
       departure_time: data.departure_time,
       frequency_minutes: data.frequency_minutes ?? null,
       repeat_daily: data.repeat_daily ?? false,
@@ -89,16 +152,13 @@ export const createTrips = async (
 
   const trips = await prisma.trip.findMany({
     where: { series_id: series.id },
-    include: tripWithDetails,
+    include: calendarTripInclude,
     orderBy: { departure_at: 'asc' },
   });
 
-  // is_only_in_series is a per-series constant — compute it once, not per trip.
-  const activeCount = await prisma.trip.count({
-    where: { series_id: series.id, status: { not: 'cancelled' } },
-  });
-  const isOnly = activeCount === 1;
-  const tripsWithFlag = trips.map((trip) => ({ ...trip, is_only_in_series: isOnly }));
+  // Freshly created — every instance belongs to this one series, so is_only_in_series
+  // is simply whether the series produced a single trip.
+  const isOnly = trips.length === 1;
 
   setImmediate(() => {
     publishAudit({
@@ -110,9 +170,8 @@ export const createTrips = async (
   });
 
   return {
-    series_id: series.id,
     trips_created: created,
-    trips: tripsWithFlag,
+    trips: trips.map((trip) => serializeCalendarTrip(trip, isOnly)),
   };
 };
 
@@ -215,34 +274,72 @@ export const searchTrips = async (params: {
   return { data, total, page, limit };
 };
 
-export const getTripById = async (id: string) => {
-  const trip = await prisma.trip.findUnique({
-    where: { id },
-    include: {
-      ...tripWithDetails,
-      series: true,
+// Trip detail include — a superset serving both the staff detail view (status,
+// series, driver, occupancy) and the passenger view (origin/destination, ordered
+// stops, operator with story).
+const tripDetailInclude = {
+  series: true,
+  bus: { select: { id: true, plate: true, type: true } },
+  driver: { select: { id: true, first_name: true, last_name: true, avatar_path: true } },
+  org: { select: { id: true, name: true, logo_path: true, story: true } },
+  route: {
+    select: {
+      id: true,
+      name: true,
+      origin_stop: { select: { id: true, name: true, lat: true, lng: true } },
+      destination_stop: { select: { id: true, name: true, lat: true, lng: true } },
+      route_stops: {
+        select: { id: true, order: true, stop: { select: { id: true, name: true, lat: true, lng: true } } },
+        orderBy: { order: 'asc' as const },
+      },
     },
-  });
+  },
+} as const;
+
+export const getTripById = async (id: string) => {
+  const trip = await prisma.trip.findUnique({ where: { id }, include: tripDetailInclude });
   if (!trip) throw new AppError('TRIP_NOT_FOUND', 404);
 
-  const siblingCount = trip.series_id
-    ? await prisma.trip.count({
-        where: { series_id: trip.series_id, status: { not: 'cancelled' } },
-      })
-    : 1;
-
+  const isOnly = await seriesOnlyResolver([trip]);
   return {
-    ...trip,
+    id: trip.id,
+    is_express: trip.is_express,
+    departure_at: trip.departure_at,
+    status: trip.status,
+    currency: 'RWF',
+    total_seats: trip.total_seats,
+    available_seats: trip.available_seats,
+    booked_seats: trip.total_seats - trip.available_seats,
+    remaining_seats: trip.available_seats,
+    origin: stopBrief(trip.route.origin_stop),
+    destination: stopBrief(trip.route.destination_stop),
+    route: { id: trip.route.id, name: trip.route.name },
+    company: trip.org
+      ? { id: trip.org.id, name: trip.org.name, logo_path: trip.org.logo_path, story: trip.org.story }
+      : null,
+    bus: trip.bus ? { id: trip.bus.id, plate: trip.bus.plate, type: trip.bus.type } : null,
+    driver: trip.driver
+      ? { id: trip.driver.id, first_name: trip.driver.first_name, last_name: trip.driver.last_name, avatar_path: trip.driver.avatar_path }
+      : null,
     series: trip.series
       ? {
           id: trip.series.id,
           frequency_minutes: trip.series.frequency_minutes,
           repeat_daily: trip.series.repeat_daily,
-          starts_on: trip.series.starts_on,
-          ends_on: trip.series.ends_on,
-          is_only_in_series: siblingCount === 1,
+          starts_on: dateOnly(trip.series.starts_on),
+          ends_on: dateOnly(trip.series.ends_on),
+          is_only_in_series: isOnly(trip.series_id),
         }
       : null,
+    stops: trip.route.route_stops.map((rs) => ({
+      id: rs.stop.id,
+      name: rs.stop.name,
+      lat: Number(rs.stop.lat),
+      lng: Number(rs.stop.lng),
+      order: rs.order,
+    })),
+    created_at: trip.created_at,
+    updated_at: trip.updated_at,
   };
 };
 
@@ -257,6 +354,7 @@ export const listTrips = async (
     driver_id?: string;
     unassigned_bus?: boolean;
     unassigned_driver?: boolean;
+    unassigned_only?: boolean;
     page?: number;
     limit?: number;
   },
@@ -266,8 +364,9 @@ export const listTrips = async (
   // callers may narrow to an arbitrary org via filters.org_id.
   const isPlatform = getScopeFor(ability, 'read', 'Trip') === 'platform';
 
-  const page = filters.page ?? 1;
-  const limit = filters.limit ?? 20;
+  // Query params arrive as strings — coerce defensively.
+  const page = Number(filters.page) || 1;
+  const limit = Number(filters.limit) || 20;
   const skip = (page - 1) * limit;
 
   const where: Prisma.TripWhereInput = {
@@ -279,6 +378,7 @@ export const listTrips = async (
       ...(filters.driver_id ? [{ driver_id: filters.driver_id }] : []),
       ...(filters.unassigned_bus ? [{ bus_id: null }] : []),
       ...(filters.unassigned_driver ? [{ driver_id: null }] : []),
+      ...(filters.unassigned_only ? [{ OR: [{ bus_id: null }, { driver_id: null }] }] : []),
       ...(filters.from || filters.to
         ? [{
             departure_at: {
@@ -293,7 +393,7 @@ export const listTrips = async (
   const [trips, total] = await Promise.all([
     prisma.trip.findMany({
       where,
-      include: tripWithDetails,
+      include: calendarTripInclude,
       orderBy: { departure_at: 'asc' },
       skip,
       take: limit,
@@ -301,11 +401,12 @@ export const listTrips = async (
     prisma.trip.count({ where }),
   ]);
 
-  return { trips, total, page, limit };
+  const isOnly = await seriesOnlyResolver(trips);
+  return { data: trips.map((t) => serializeCalendarTrip(t, isOnly(t.series_id))), total, page, limit };
 };
 
 type TripPatchInput = Partial<{
-  departure_time: string;
+  departure_at: string;
   bus_id: string | null;
   driver_id: string | null;
   total_seats: number;
@@ -315,8 +416,7 @@ type TripPatchInput = Partial<{
 
 /**
  * Translate a client patch into a valid Trip update:
- *  - departure_time (HH:MM, Kigali) → recompute departure_at on the trip's own day
- *    and arrival_at from its duration (departure_time is NOT a Trip column),
+ *  - departure_at (absolute ISO) → set directly and recompute arrival_at from duration,
  *  - total_seats → reconcile available_seats so booked seats are preserved.
  */
 const buildTripPatch = (
@@ -333,8 +433,8 @@ const buildTripPatch = (
     patch.total_seats = data.total_seats;
     patch.available_seats = Math.max(0, data.total_seats - booked);
   }
-  if (data.departure_time !== undefined) {
-    const dep = localWallTimeToUtc(utcToLocalDay(trip.departure_at), data.departure_time);
+  if (data.departure_at !== undefined) {
+    const dep = new Date(data.departure_at);
     patch.departure_at = dep;
     if (trip.duration_minutes) patch.arrival_at = new Date(dep.getTime() + trip.duration_minutes * 60_000);
   }
@@ -351,18 +451,33 @@ export const updateTrip = async (
   if (!trip) throw new AppError('TRIP_NOT_FOUND', 404);
   if (!buildAbilityFromRules(user.rules).can('update', subject('Trip', trip) as unknown as Subjects)) throw new AppError('FORBIDDEN', 403);
 
+  // Validate any (re)assignment up front so a bad id fails before mutating anything.
+  if (data.bus_id) {
+    const bus = await prisma.bus.findUnique({ where: { id: data.bus_id } });
+    if (!bus) throw new AppError('BUS_NOT_FOUND', 404);
+  }
+  if (data.driver_id) {
+    const driver = await prisma.staffUser.findFirst({ where: { id: data.driver_id, org_id: trip.org_id } });
+    if (!driver) throw new AppError('DRIVER_NOT_FOUND', 404);
+  }
+
   if (scope === 'this') {
+    // A trip with confirmed passengers is frozen — no edits, including reassignment.
+    const booked = await prisma.ticket.count({ where: { trip_id: id, status: 'confirmed' } });
+    if (booked > 0) throw new AppError('HAS_BOOKINGS', 400);
+
     const updated = await prisma.trip.update({
       where: { id },
       data: buildTripPatch(trip, data),
-      include: tripWithDetails,
+      include: calendarTripInclude,
     });
 
     setImmediate(() => {
       publishAudit({ actor_id: user.id, action: 'update', resource: 'Trip', resource_id: id });
     });
 
-    return { updated: 1, skipped: [], trips: [updated] };
+    const isOnly = await seriesOnlyResolver([updated]);
+    return serializeCalendarTrip(updated, isOnly(updated.series_id));
   }
 
   if (!trip.series_id) throw new AppError('TRIP_NOT_IN_SERIES', 400);
@@ -395,80 +510,72 @@ export const updateTrip = async (
   return { updated: updated.length, skipped };
 };
 
-/**
- * Cancel one trip and make every confirmed passenger whole: mark their tickets
- * cancelled and emit a refund request (payment-service refunds + notifies) plus a
- * trip.cancelled domain event. Returns how many tickets were refunded.
- */
-const cancelOneTrip = async (
-  trip: { id: string; org_id: string },
-  reason: string | undefined,
-): Promise<number> => {
-  await prisma.trip.update({ where: { id: trip.id }, data: { status: 'cancelled' } });
-
-  const tickets = await prisma.ticket.findMany({ where: { trip_id: trip.id, status: 'confirmed' } });
-  for (const tk of tickets) {
-    await prisma.ticket.update({
-      where: { id: tk.id },
-      data: { status: 'cancelled', cancelled_at: new Date(), cancellation_reason: reason ?? 'TRIP_CANCELLED' },
-    });
-    publishRefundRequested({
-      ticket_id: tk.id,
-      original_payment_ref: tk.payment_ref,
-      ticket_price: tk.ticket_price,
-      user_id: tk.user_id,
-      phone: tk.passenger_phone,
-      payment_method: tk.payment_method,
-      reason: 'TRIP_CANCELLED',
-    });
-  }
-
-  publishTripEvent({ type: 'trip.cancelled', trip_id: trip.id, org_id: trip.org_id, reason });
-  return tickets.length;
+// A trip is removable only when it has no confirmed passengers. Dead ticket rows
+// (failed/expired/initiated) have no booking to honour but still FK-reference the
+// trip, so they're cleared in the same transaction before the row is deleted.
+const hardDeleteTrip = async (tripId: string): Promise<void> => {
+  await prisma.$transaction([
+    prisma.ticket.deleteMany({ where: { trip_id: tripId } }),
+    prisma.trip.delete({ where: { id: tripId } }),
+  ]);
 };
 
-export const cancelTrip = async (
+const hasConfirmedBookings = async (tripId: string): Promise<boolean> =>
+  (await prisma.ticket.count({ where: { trip_id: tripId, status: 'confirmed' } })) > 0;
+
+/**
+ * Hard-delete a trip (scope 'this') or this and every later scheduled instance in
+ * the series (scope 'future'). Trips with confirmed bookings are never deleted: a
+ * single booked trip throws HAS_BOOKINGS; in a series they are collected into
+ * `skipped`. No refunds are issued — booked trips must run their course.
+ */
+export const deleteTrip = async (
   user: AuthenticatedUser,
   id: string,
   scope: 'this' | 'future',
-  reason?: string,
-) => {
+): Promise<null | { deleted: number; skipped: Array<{ trip_id: string; departure_at: Date; reason: string }> }> => {
   const trip = await prisma.trip.findUnique({ where: { id } });
   if (!trip) throw new AppError('TRIP_NOT_FOUND', 404);
   if (!buildAbilityFromRules(user.rules).can('cancel', subject('Trip', trip) as unknown as Subjects)) throw new AppError('FORBIDDEN', 403);
 
   if (scope === 'this') {
-    const refunded = await cancelOneTrip(trip, reason);
+    if (await hasConfirmedBookings(id)) throw new AppError('HAS_BOOKINGS', 400);
+    await hardDeleteTrip(id);
     setImmediate(() => {
-      publishAudit({ actor_id: user.id, action: 'cancel', resource: 'Trip', resource_id: id, delta: reason ? { reason: { from: null, to: reason } } : undefined });
+      publishAudit({ actor_id: user.id, action: 'delete', resource: 'Trip', resource_id: id });
     });
-    return { cancelled: 1, refunded };
+    return null;
   }
 
   if (!trip.series_id) throw new AppError('TRIP_NOT_IN_SERIES', 400);
 
-  // Cancel this and every later scheduled instance, refunding confirmed passengers
-  // on each — no silent skipping that would strand paying riders.
   const futureTrips = await prisma.trip.findMany({
     where: {
       series_id: trip.series_id,
       status: 'scheduled',
       departure_at: { gte: trip.departure_at },
     },
+    orderBy: { departure_at: 'asc' },
   });
 
-  let refunded = 0;
+  const skipped: Array<{ trip_id: string; departure_at: Date; reason: string }> = [];
+  let deleted = 0;
   for (const t of futureTrips) {
-    refunded += await cancelOneTrip(t, reason);
+    if (await hasConfirmedBookings(t.id)) {
+      skipped.push({ trip_id: t.id, departure_at: t.departure_at, reason: 'HAS_BOOKINGS' });
+      continue;
+    }
+    await hardDeleteTrip(t.id);
+    deleted++;
   }
-  // Pause the series so the scheduler stops materializing new instances.
+  // Pause the series so the scheduler stops re-materializing the deleted instances.
   await prisma.tripSeries.update({ where: { id: trip.series_id }, data: { status: 'paused' } });
 
   setImmediate(() => {
-    publishAudit({ actor_id: user.id, action: 'cancel', resource: 'Trip', resource_id: id, delta: reason ? { reason: { from: null, to: reason } } : undefined });
+    publishAudit({ actor_id: user.id, action: 'delete', resource: 'Trip', resource_id: id });
   });
 
-  return { cancelled: futureTrips.length, refunded };
+  return { deleted, skipped };
 };
 
 export const activateTrip = async (user: AuthenticatedUser, id: string) => {

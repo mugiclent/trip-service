@@ -18,9 +18,19 @@ import { bootstrap } from '../src/loaders/bootstrap.js';
 import { ORG, BUSES } from '../src/data/network.js';
 
 async function main(): Promise<void> {
-  console.log('Wiping operational tables (tickets, trips)…');
+  console.log('Wiping operational tables (tickets, trips, series)…');
   await prisma.ticket.deleteMany({});
   await prisma.trip.deleteMany({});
+  await prisma.tripSeries.deleteMany({});
+
+  // Also wipe the reference network so removed/renamed seed entries don't linger
+  // (bootstrap is upsert-only and never prunes). Children first to satisfy FKs.
+  console.log('Wiping reference tables (prices, route_stops, routes, buses, stops)…');
+  await prisma.price.deleteMany({});
+  await prisma.routeStop.deleteMany({});
+  await prisma.route.deleteMany({});
+  await prisma.bus.deleteMany({});
+  await prisma.stop.deleteMany({});
 
   console.log('Syncing reference network via bootstrap…');
   const { routes, buses } = await bootstrap();

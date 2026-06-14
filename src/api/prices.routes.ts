@@ -13,6 +13,13 @@ const createSchema = Joi.object({
   amount: Joi.number().integer().min(0).required(),
 });
 
+const upsertSchema = Joi.object({
+  boarding_stop_id: Joi.string().uuid().required(),
+  alighting_stop_id: Joi.string().uuid().required(),
+  amount: Joi.number().integer().min(0).required(),
+  currency: Joi.string().length(3).optional(),
+});
+
 const updateSchema = Joi.object({
   amount: Joi.number().integer().min(0).required(),
 });
@@ -30,6 +37,7 @@ const bulkSchema = Joi.object({
 router.get('/', optionalAuthenticate, ctrl.get);
 router.get('/list', optionalAuthenticate, ctrl.list);
 router.post('/', authenticate, authorize('create', 'Price'), validate(createSchema), ctrl.create);
+router.put('/', authenticate, authorize('create', 'Price'), validate(upsertSchema), ctrl.upsert);
 router.patch('/:id', authenticate, authorize('update', 'Price'), validate(updateSchema), ctrl.update);
 router.delete('/:id', authenticate, authorize('delete', 'Price'), ctrl.remove);
 router.post('/bulk', authenticate, authorize('create', 'Price'), validate(bulkSchema), ctrl.bulkUpsert);

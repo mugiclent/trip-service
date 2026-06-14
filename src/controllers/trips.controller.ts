@@ -48,7 +48,7 @@ export const list = async (req: Request, res: Response, next: NextFunction): Pro
 export const getById = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const trip = await tripsService.getTripById(req.params['id'] as string);
-    res.status(200).json({ trip });
+    res.status(200).json(trip);
   } catch (err) { next(err); }
 };
 
@@ -61,11 +61,13 @@ export const update = async (req: Request, res: Response, next: NextFunction): P
   } catch (err) { next(err); }
 };
 
-export const cancel = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const remove = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const user = req.user as AuthenticatedUser;
-    const body = req.body as { scope: 'this' | 'future'; reason?: string };
-    const result = await tripsService.cancelTrip(user, req.params['id'] as string, body.scope, body.reason);
+    const body = req.body as { scope: 'this' | 'future' };
+    const result = await tripsService.deleteTrip(user, req.params['id'] as string, body.scope);
+    // scope 'this' with no bookings → 204; scope 'future' → 200 { deleted, skipped }.
+    if (result === null) { res.status(204).end(); return; }
     res.status(200).json(result);
   } catch (err) { next(err); }
 };

@@ -88,7 +88,7 @@ export const bookWalletTicket = async (
     const freshTrip = await tx.trip.findFirst({
       where: { id: data.trip_id, available_seats: { gte: data.seats_count } },
     });
-    if (!freshTrip) throw new AppError('NO_SEATS_AVAILABLE', 409, { available: trip.available_seats });
+    if (!freshTrip) throw new AppError('NO_SEATS_AVAILABLE', 400, { available: trip.available_seats });
 
     await tx.trip.update({
       where: { id: data.trip_id },
@@ -156,7 +156,7 @@ export const bookMomoTicket = async (data: {
     const freshTrip = await tx.trip.findFirst({
       where: { id: data.trip_id, available_seats: { gte: data.seats_count } },
     });
-    if (!freshTrip) throw new AppError('NO_SEATS_AVAILABLE', 409, { available: trip.available_seats });
+    if (!freshTrip) throw new AppError('NO_SEATS_AVAILABLE', 400, { available: trip.available_seats });
 
     await tx.trip.update({
       where: { id: data.trip_id },
@@ -222,7 +222,7 @@ export const bookCashTicket = async (
     const freshTrip = await tx.trip.findFirst({
       where: { id: data.trip_id, available_seats: { gte: seatsCount } },
     });
-    if (!freshTrip) throw new AppError('NO_SEATS_AVAILABLE', 409, { available: trip.available_seats });
+    if (!freshTrip) throw new AppError('NO_SEATS_AVAILABLE', 400, { available: trip.available_seats });
 
     await tx.trip.update({
       where: { id: data.trip_id },
@@ -440,4 +440,64 @@ export const listTickets = async (
   ]);
 
   return { tickets, total, page, limit };
+};
+
+// The six DB ticket states collapse into the three buckets the UI filters on.
+const TICKET_STATUS_DB: Record<string, string[]> = {
+  confirmed: ['confirmed'],
+  pending: ['initiated', 'payment_pending'],
+  cancelled: ['cancelled', 'failed', 'expired'],
+};
+const toStatusBucket = (s: string): 'confirmed' | 'pending' | 'cancelled' =>
+  s === 'confirmed' ? 'confirmed' : s === 'initiated' || s === 'payment_pending' ? 'pending' : 'cancelled';
+
+const tripTicketInclude = {
+  boarding_stop: { select: { id: true, name: true } },
+  alighting_stop: { select: { id: true, name: true } },
+} as const;
+
+type TripTicketRow = Prisma.TicketGetPayload<{ include: typeof tripTicketInclude }>;
+
+// Ticket-list row for the trip detail screen. Tickets carry no currency column —
+// the platform prices in RWF.
+const serializeTripTicket = (t: TripTicketRow) => ({
+  id: t.id,
+  passenger_name: t.passenger_name,
+  phone: t.passenger_phone,
+  boarding_stop: { id: t.boarding_stop.id, name: t.boarding_stop.name },
+  alighting_stop: { id: t.alighting_stop.id, name: t.alighting_stop.name },
+  seats_count: t.seats_count,
+  amount: t.ticket_price,
+  currency: 'RWF',
+  payment_method: t.payment_method,
+  status: toStatusBucket(t.status),
+  created_by: t.created_by ? 'staff' : 'passenger',
+  booked_at: t.created_at,
+});
+
+export const listTripTickets = async (
+  user: AuthenticatedUser,
+  tripId: string,
+  filters: { page?: number; limit?: number; status?: string },
+) => {
+  const ability = buildAbilityFromRules(user.rules);
+  const page = Number(filters.page) || 1;
+  const limit = Number(filters.limit) || 20;
+  const skip = (page - 1) * limit;
+
+  const statusDb = filters.status ? TICKET_STATUS_DB[filters.status] : undefined;
+  const where: Prisma.TicketWhereInput = {
+    AND: [
+      accessibleWhere(ability, 'read', 'Ticket'),
+      { trip_id: tripId },
+      ...(statusDb ? [{ status: { in: statusDb as never } }] : []),
+    ],
+  };
+
+  const [tickets, total] = await Promise.all([
+    prisma.ticket.findMany({ where, include: tripTicketInclude, orderBy: { created_at: 'desc' }, skip, take: limit }),
+    prisma.ticket.count({ where }),
+  ]);
+
+  return { data: tickets.map(serializeTripTicket), total, page, limit };
 };

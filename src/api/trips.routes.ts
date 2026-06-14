@@ -6,6 +6,7 @@ import { validate } from '../middleware/validate.js';
 import { orgBlocking } from '../middleware/orgBlocking.js';
 import * as ctrl from '../controllers/trips.controller.js';
 import * as manifestCtrl from '../controllers/manifest.controller.js';
+import * as ticketsCtrl from '../controllers/tickets.controller.js';
 
 const router = Router();
 
@@ -24,7 +25,7 @@ const createSchema = Joi.object({
 
 const updateSchema = Joi.object({
   scope: Joi.string().valid('this', 'future').required(),
-  departure_time: Joi.string().pattern(/^\d{2}:\d{2}$/).optional(),
+  departure_at: Joi.string().isoDate().optional(),
   bus_id: Joi.string().uuid().allow(null).optional(),
   driver_id: Joi.string().uuid().allow(null).optional(),
   total_seats: Joi.number().integer().min(1).optional(),
@@ -32,18 +33,18 @@ const updateSchema = Joi.object({
   cancellation_allowed: Joi.boolean().optional(),
 }).min(2);
 
-const cancelSchema = Joi.object({
+const deleteSchema = Joi.object({
   scope: Joi.string().valid('this', 'future').required(),
-  reason: Joi.string().max(500).optional(),
 });
 
 router.get('/', optionalAuthenticate, ctrl.list);
 router.get('/:id', optionalAuthenticate, ctrl.getById);
 router.post('/', authenticate, orgBlocking, authorize('create', 'Trip'), validate(createSchema), ctrl.create);
 router.patch('/:id', authenticate, orgBlocking, authorize('update', 'Trip'), validate(updateSchema), ctrl.update);
-router.delete('/:id', authenticate, orgBlocking, authorize('cancel', 'Trip'), validate(cancelSchema), ctrl.cancel);
+router.delete('/:id', authenticate, orgBlocking, authorize('cancel', 'Trip'), validate(deleteSchema), ctrl.remove);
 router.post('/:id/activate', authenticate, orgBlocking, authorize('update', 'Trip'), ctrl.activate);
 router.post('/:id/complete', authenticate, orgBlocking, authorize('update', 'Trip'), ctrl.complete);
 router.get('/:id/manifest', authenticate, orgBlocking, authorize('read_manifest', 'Trip'), manifestCtrl.get);
+router.get('/:id/tickets', authenticate, orgBlocking, authorize('read', 'Ticket'), ticketsCtrl.listForTrip);
 
 export default router;

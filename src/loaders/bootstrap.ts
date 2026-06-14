@@ -14,7 +14,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { prisma } from '../models/index.js';
-import { ORG, STOPS, ROUTES, PRICES, BUSES, slugify, routeDurationMin } from '../data/network.js';
+import { ORG, STOPS, ROUTES, PRICES, BUSES, slugify, routeDurationMin, provinceFor } from '../data/network.js';
 
 export interface BootstrapResult {
   /** stop name → id */
@@ -38,12 +38,13 @@ export const bootstrap = async (): Promise<BootstrapResult> => {
   // ── 2. Stops ────────────────────────────────────────────────────────────────
   const stopId: Record<string, string> = {};
   for (const [name, [lat, lng]] of Object.entries(STOPS)) {
+    const province = provinceFor([lat, lng]);
     // Platform default stop (org_id NULL). Find-or-create since name uniqueness is
     // now scoped per org; org forks/overrides keep the default's id as canonical.
     const existing = await prisma.stop.findFirst({ where: { name, org_id: null } });
     const stop = existing
-      ? await prisma.stop.update({ where: { id: existing.id }, data: { lat, lng } })
-      : await prisma.stop.create({ data: { id: randomUUID(), name, city: name, lat, lng, org_id: null } });
+      ? await prisma.stop.update({ where: { id: existing.id }, data: { lat, lng, province } })
+      : await prisma.stop.create({ data: { id: randomUUID(), name, city: name, province, lat, lng, org_id: null } });
     stopId[name] = stop.id;
   }
 

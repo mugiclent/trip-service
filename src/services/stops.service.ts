@@ -1,4 +1,5 @@
 import { prisma } from '../models/index.js';
+import { Prisma } from '../models/index.js';
 import type { Stop } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { candidateWhere } from '../utils/overrides.js';
@@ -12,7 +13,7 @@ import { candidateWhere } from '../utils/overrides.js';
  * their own id. `orgId` is the acting org (null = platform admin on the defaults).
  */
 
-type StopPatch = Partial<{ name: string; lat: number; lng: number; city: string }>;
+type StopPatch = Partial<{ name: string; lat: number; lng: number; city: string; province: string }>;
 
 const overlay = (def: Stop, fork: Stop): Stop => ({
   ...def,
@@ -20,6 +21,7 @@ const overlay = (def: Stop, fork: Stop): Stop => ({
   lat: fork.lat,
   lng: fork.lng,
   city: fork.city,
+  province: fork.province,
 }); // keep def.id (the canonical identity) so references stay valid
 
 /**
@@ -57,11 +59,24 @@ export const listStops = async (orgId: string | null, q?: string): Promise<Stop[
   return matches.sort((a, b) => a.name.localeCompare(b.name));
 };
 
+// Stop names are globally unique — a clash (on create or rename) means the
+// location already exists.
+const asLocationConflict = (err: unknown): never => {
+  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+    throw new AppError('LOCATION_ALREADY_EXISTS', 409);
+  }
+  throw err;
+};
+
 export const createStop = async (
   orgId: string | null,
-  data: { name: string; lat: number; lng: number; city?: string },
+  data: { name: string; lat: number; lng: number; city?: string; province?: string },
 ): Promise<Stop> => {
-  return prisma.stop.create({ data: { ...data, org_id: orgId } });
+  try {
+    return await prisma.stop.create({ data: { ...data, org_id: orgId } });
+  } catch (err) {
+    return asLocationConflict(err);
+  }
 };
 
 /**
@@ -94,26 +109,31 @@ export const updateStop = async (orgId: string | null, id: string, data: StopPat
   const target = await prisma.stop.findUnique({ where: { id } });
   if (!target) throw new AppError('STOP_NOT_FOUND', 404);
 
-  // Org editing a platform default → fork (preserving the canonical id for references).
-  if (orgId && target.org_id === null) {
-    const existing = await prisma.stop.findFirst({ where: { org_id: orgId, override_of: id } });
-    const merged = {
-      name: data.name ?? target.name,
-      lat: data.lat ?? Number(target.lat),
-      lng: data.lng ?? Number(target.lng),
-      city: data.city ?? target.city ?? undefined,
-    };
-    if (existing) {
-      const fork = await prisma.stop.update({ where: { id: existing.id }, data: { ...merged, is_hidden: false } });
+  try {
+    // Org editing a platform default → fork (preserving the canonical id for references).
+    if (orgId && target.org_id === null) {
+      const existing = await prisma.stop.findFirst({ where: { org_id: orgId, override_of: id } });
+      const merged = {
+        name: data.name ?? target.name,
+        lat: data.lat ?? Number(target.lat),
+        lng: data.lng ?? Number(target.lng),
+        city: data.city ?? target.city ?? undefined,
+        province: data.province ?? target.province ?? undefined,
+      };
+      if (existing) {
+        const fork = await prisma.stop.update({ where: { id: existing.id }, data: { ...merged, is_hidden: false } });
+        return overlay(target, fork);
+      }
+      const fork = await prisma.stop.create({ data: { ...merged, org_id: orgId, override_of: id } });
       return overlay(target, fork);
     }
-    const fork = await prisma.stop.create({ data: { ...merged, org_id: orgId, override_of: id } });
-    return overlay(target, fork);
-  }
 
-  // Editing own row (net-new or platform default as admin) — mutate in place.
-  if (target.org_id === orgId) {
-    return prisma.stop.update({ where: { id }, data });
+    // Editing own row (net-new or platform default as admin) — mutate in place.
+    if (target.org_id === orgId) {
+      return await prisma.stop.update({ where: { id }, data });
+    }
+  } catch (err) {
+    return asLocationConflict(err);
   }
   throw new AppError('STOP_NOT_FOUND', 404);
 };
@@ -138,11 +158,23 @@ export const deleteStop = async (orgId: string | null, id: string): Promise<void
     return;
   }
 
-  // Hard delete of own net-new stop / a default as platform admin — block if referenced.
+  // Hard delete of own net-new stop / a default as platform admin — block if referenced
+  // by any route (as an ordered stop or as an origin/destination endpoint).
   if (target.org_id === orgId) {
-    const inUse = await prisma.routeStop.count({ where: { stop_id: id } });
-    if (inUse > 0) throw new AppError('STOP_IN_USE', 409);
-    await prisma.stop.delete({ where: { id } });
+    const [inRouteStops, asEndpoint] = await Promise.all([
+      prisma.routeStop.count({ where: { stop_id: id } }),
+      prisma.route.count({ where: { OR: [{ origin_stop_id: id }, { destination_stop_id: id }] } }),
+    ]);
+    if (inRouteStops + asEndpoint > 0) throw new AppError('LOCATION_IN_USE', 409);
+    try {
+      await prisma.stop.delete({ where: { id } });
+    } catch (err) {
+      // Any lingering FK reference (e.g. a price or ticket) also blocks deletion.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') {
+        throw new AppError('LOCATION_IN_USE', 409);
+      }
+      throw err;
+    }
     return;
   }
   throw new AppError('STOP_NOT_FOUND', 404);

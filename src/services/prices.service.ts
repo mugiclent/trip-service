@@ -25,17 +25,18 @@ const setOrgPrice = async (
   boarding_stop_id: string,
   alighting_stop_id: string,
   amount: number,
+  currency?: string,
 ) => {
   const def = await findDefault(boarding_stop_id, alighting_stop_id);
   const existing = await findOrgRow(orgId, boarding_stop_id, alighting_stop_id);
   if (existing) {
     return prisma.price.update({
       where: { id: existing.id },
-      data: { amount, is_hidden: false, override_of: def?.id ?? null },
+      data: { amount, is_hidden: false, override_of: def?.id ?? null, ...(currency ? { currency } : {}) },
     });
   }
   return prisma.price.create({
-    data: { org_id: orgId, boarding_stop_id, alighting_stop_id, amount, override_of: def?.id ?? null },
+    data: { org_id: orgId, boarding_stop_id, alighting_stop_id, amount, override_of: def?.id ?? null, ...(currency ? { currency } : {}) },
   });
 };
 
@@ -61,14 +62,35 @@ export const listEffectivePrices = async (orgId: string | null) => {
   return resolveEffective(rows, orgId);
 };
 
+/**
+ * Effective fares for `orgId` with stop names, for the price-matrix grid. Optionally
+ * filtered to a boarding and/or alighting stop (the grid's origin/destination filters).
+ */
+export const listEffectivePricesDetailed = async (
+  orgId: string | null,
+  filters: { boarding_stop_id?: string; alighting_stop_id?: string } = {},
+) => {
+  const rows = await prisma.price.findMany({
+    where: candidateWhere(orgId),
+    include: {
+      boarding_stop: { select: { id: true, name: true } },
+      alighting_stop: { select: { id: true, name: true } },
+    },
+  });
+  let effective = resolveEffective(rows, orgId);
+  if (filters.boarding_stop_id) effective = effective.filter((p) => p.boarding_stop_id === filters.boarding_stop_id);
+  if (filters.alighting_stop_id) effective = effective.filter((p) => p.alighting_stop_id === filters.alighting_stop_id);
+  return effective;
+};
+
 export const createPrice = async (
   orgId: string | null,
-  data: { boarding_stop_id: string; alighting_stop_id: string; amount: number },
+  data: { boarding_stop_id: string; alighting_stop_id: string; amount: number; currency?: string },
 ) => {
-  if (orgId) return setOrgPrice(orgId, data.boarding_stop_id, data.alighting_stop_id, data.amount);
+  if (orgId) return setOrgPrice(orgId, data.boarding_stop_id, data.alighting_stop_id, data.amount, data.currency);
   // Platform admin — create or replace a shared default.
   const def = await findDefault(data.boarding_stop_id, data.alighting_stop_id);
-  if (def) return prisma.price.update({ where: { id: def.id }, data: { amount: data.amount } });
+  if (def) return prisma.price.update({ where: { id: def.id }, data: { amount: data.amount, ...(data.currency ? { currency: data.currency } : {}) } });
   return prisma.price.create({ data: { ...data, org_id: null } });
 };
 

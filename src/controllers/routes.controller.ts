@@ -8,8 +8,15 @@ const actingOrg = (req: Request): string | null => req.user?.org_id ?? null;
 
 export const create = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const route = await routesService.createRoute({ ...req.body as { stop_ids: string[]; name?: string }, org_id: actingOrg(req) });
-    res.status(201).json({ route });
+    const user = req.user as AuthenticatedUser;
+    const body = req.body as { name?: string; stops: { location_id: string; order: number }[]; org_id?: string };
+    // Org-scope callers are pinned to their own org; platform-scope callers may
+    // target any org via org_id (or null for a shared platform default).
+    const orgId = user.org_id ?? body.org_id ?? null;
+    const stop_ids = [...body.stops].sort((a, b) => a.order - b.order).map((s) => s.location_id);
+
+    const route = await routesService.createRoute({ org_id: orgId, stop_ids, name: body.name });
+    res.status(201).json(routesService.serializeRouteDetail(route));
   } catch (err) { next(err); }
 };
 
@@ -17,22 +24,43 @@ export const list = async (req: Request, res: Response, next: NextFunction): Pro
   try {
     const user = req.user as AuthenticatedUser | undefined;
     const orgId = user?.user_type === 'staff' ? user.org_id ?? null : null;
-    const routes = await routesService.listRoutes(orgId, !user);
-    res.status(200).json({ routes });
+    const q = (req.query['q'] as string | undefined)?.toLowerCase();
+    const status = req.query['status'] as string | undefined; // active | inactive
+    const page = Number(req.query['page']) || 1;
+    const limit = Number(req.query['limit']) || 20;
+
+    // Anonymous callers see active routes only; staff see active + inactive so the
+    // status filter is meaningful. The effective set is resolved in-memory, so q/
+    // status filtering and paging happen here.
+    let all = await routesService.listRoutes(orgId, !user);
+    if (q) all = all.filter((r) => r.name.toLowerCase().includes(q));
+    if (status === 'active') all = all.filter((r) => r.is_active);
+    else if (status === 'inactive') all = all.filter((r) => !r.is_active);
+
+    const start = (page - 1) * limit;
+    const data = all.slice(start, start + limit).map(routesService.serializeRouteListItem);
+    res.status(200).json({ data, total: all.length, page, limit });
   } catch (err) { next(err); }
 };
 
 export const get = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const route = await routesService.getRoute(actingOrg(req), req.params['id'] as string);
-    res.status(200).json({ route });
+    const orgId = actingOrg(req);
+    const route = await routesService.getRoute(orgId, req.params['id'] as string);
+    res.status(200).json(await routesService.serializeRouteFull(orgId, route));
   } catch (err) { next(err); }
 };
 
 export const update = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const route = await routesService.updateRoute(actingOrg(req), req.params['id'] as string, req.body as Partial<{ name: string; is_active: boolean }>);
-    res.status(200).json({ route });
+    const orgId = actingOrg(req);
+    const body = req.body as { name?: string; status?: 'active' | 'inactive'; stops?: { location_id: string; order: number }[] };
+    const route = await routesService.updateRoute(orgId, req.params['id'] as string, {
+      name: body.name,
+      is_active: body.status !== undefined ? body.status === 'active' : undefined,
+      stops: body.stops,
+    });
+    res.status(200).json(await routesService.serializeRouteFull(orgId, route));
   } catch (err) { next(err); }
 };
 

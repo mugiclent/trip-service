@@ -70,7 +70,7 @@ info:
     5. If the BullMQ seat-hold job fires before payment confirms → ticket set to `expired`, seat released.
 
     ### Cash (dispatcher only)
-    1. `POST /tickets/cash` — dispatcher issues ticket directly; requires `create` on `Ticket`.
+    1. `POST /tickets` with `payment_method: cash` — dispatcher issues ticket; requires `create` on `Ticket`.
     2. Ticket created at `payment_pending`; seat held for **30 seconds**.
     3. `payment.ticket.requested` published → payment-service records cash transaction.
     4. Resolves within 30 seconds.
@@ -268,6 +268,7 @@ components:
         lat: { type: number, example: -1.9441 }
         lng: { type: number, example: 30.0619 }
         city: { type: string, nullable: true, example: Kigali }
+        province: { type: string, nullable: true, example: Kigali City }
 
     RouteStop:
       type: object
@@ -285,6 +286,37 @@ components:
         route_stops:
           type: array
           items: { $ref: '#/components/schemas/RouteStop' }
+
+    RouteDetail:
+      type: object
+      description: Full route detail — status, org, price-completeness and ordered stops.
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, example: 'Kigali — Gisenyi' }
+        status: { type: string, enum: [active, inactive], example: inactive }
+        org:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string, example: Volcano Express }
+        prices_complete:
+          type: boolean
+          description: True when every boardable stop-pair has a fare; required before activation.
+          example: false
+        stops:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid, description: route_stop id }
+              location_id: { type: string, format: uuid }
+              name: { type: string, example: Kigali }
+              lat: { type: number, example: -1.9441 }
+              lng: { type: number, example: 30.0619 }
+              order: { type: integer, example: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
 
     Price:
       type: object
@@ -522,6 +554,124 @@ components:
         page: { type: integer, example: 1 }
         limit: { type: integer, example: 20 }
 
+    CalendarTrip:
+      type: object
+      description: A trip tile for the staff calendar/management view.
+      properties:
+        id: { type: string, format: uuid }
+        departure_at: { type: string, format: date-time, example: '2026-04-20T06:00:00.000Z' }
+        status: { type: string, enum: [scheduled, active, completed, cancelled], example: scheduled }
+        is_express: { type: boolean, example: false }
+        total_seats: { type: integer, example: 30 }
+        booked_seats: { type: integer, example: 12 }
+        remaining_seats: { type: integer, example: 18 }
+        series:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string, format: uuid }
+            frequency_minutes: { type: integer, nullable: true, example: 30 }
+            repeat_daily: { type: boolean, example: true }
+            starts_on: { type: string, format: date, example: '2026-04-20' }
+            ends_on: { type: string, format: date, nullable: true, example: '2026-05-20' }
+            is_only_in_series: { type: boolean, example: false }
+        bus:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string, format: uuid }
+            plate: { type: string, example: RAA 001 A }
+            type: { type: string, example: Coach }
+        driver:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string, format: uuid }
+            first_name: { type: string, example: Jean }
+            last_name: { type: string, example: Uwimana }
+            avatar_path: { type: string, nullable: true }
+        route:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string, example: 'Kigali — Gisenyi' }
+
+    PaginatedTripCalendar:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/CalendarTrip' } }
+        total: { type: integer, example: 24 }
+        page: { type: integer, example: 1 }
+        limit: { type: integer, example: 100 }
+
+    TripDetail:
+      description: |
+        Single-trip detail — a superset serving both the staff view (status, series,
+        driver, occupancy, timestamps) and the passenger view (origin/destination,
+        ordered stops, operator with story, currency).
+      allOf:
+        - $ref: '#/components/schemas/CalendarTrip'
+        - type: object
+          properties:
+            currency: { type: string, example: RWF }
+            available_seats: { type: integer, example: 12 }
+            origin: { $ref: '#/components/schemas/Location' }
+            destination: { $ref: '#/components/schemas/Location' }
+            company:
+              type: object
+              nullable: true
+              properties:
+                id: { type: string, format: uuid }
+                name: { type: string, example: Volcano Express }
+                logo_path: { type: string, nullable: true }
+                story: { type: string, nullable: true, example: Short operator description }
+            stops:
+              type: array
+              description: Ordered route stops (empty for express trips with no intermediate stops).
+              items:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  name: { type: string, example: Kigali }
+                  lat: { type: number, example: -1.9441 }
+                  lng: { type: number, example: 30.0619 }
+                  order: { type: integer, example: 1 }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+
+    TripTicket:
+      type: object
+      description: A ticket row in the trip detail ticket list.
+      properties:
+        id: { type: string, format: uuid }
+        passenger_name: { type: string, example: Kalisa Nkusi }
+        phone: { type: string, nullable: true, example: '+250788123456' }
+        boarding_stop:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string, example: Kigali }
+        alighting_stop:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string, example: Musanze }
+        seats_count: { type: integer, example: 2 }
+        amount: { type: integer, example: 4000 }
+        currency: { type: string, example: RWF }
+        payment_method: { type: string, enum: [cash, wallet, mtn, airtel] }
+        status: { type: string, enum: [confirmed, pending, cancelled], description: 'Collapsed bucket: pending = initiated/payment_pending; cancelled = cancelled/failed/expired.' }
+        created_by: { type: string, enum: [passenger, staff] }
+        booked_at: { type: string, format: date-time }
+
+    PaginatedTripTickets:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/TripTicket' } }
+        total: { type: integer, example: 12 }
+        page: { type: integer, example: 1 }
+        limit: { type: integer, example: 20 }
+
     PaginatedTickets:
       type: object
       properties:
@@ -555,15 +705,19 @@ paths:
     get:
       tags: [Locations]
       summary: List locations
-      description: Public. Optionally filter by name fragment with `q`.
+      description: |
+        Public, paginated. Filter by name fragment with `q`. Serves both the staff
+        locations list and the passenger autocomplete (which reads `id/name/lat/lng`).
       parameters:
         - in: query
           name: q
           schema: { type: string }
           description: Case-insensitive name search.
+        - $ref: '#/components/parameters/QueryPage'
+        - $ref: '#/components/parameters/QueryLimit'
       responses:
         '200':
-          description: Location list (autocomplete payload — id, name, lat, lng only)
+          description: Paginated location list
           content:
             application/json:
               schema:
@@ -575,13 +729,18 @@ paths:
                       type: object
                       properties:
                         id: { type: string, format: uuid, example: 'a1b2c3d4-0000-0000-0000-000000000001' }
-                        name: { type: string, example: Kigali }
-                        lat: { type: number, example: -1.9441 }
-                        lng: { type: number, example: 30.0619 }
+                        name: { type: string, example: Musanze }
+                        province: { type: string, nullable: true, example: Northern Province }
+                        lat: { type: number, example: -1.4989 }
+                        lng: { type: number, example: 29.6340 }
+                        created_at: { type: string, format: date-time }
+                  total: { type: integer, example: 24 }
+                  page: { type: integer, example: 1 }
+                  limit: { type: integer, example: 20 }
     post:
       tags: [Locations]
       summary: Create location
-      description: Requires `create` on `Location` (`platform-admin` only).
+      description: Requires `create` on `Location`.
       requestBody:
         required: true
         content:
@@ -590,10 +749,15 @@ paths:
               type: object
               required: [name, lat, lng]
               properties:
-                name: { type: string, maxLength: 255, example: Nyabugogo Bus Terminal }
-                lat: { type: number, example: -1.9441 }
-                lng: { type: number, example: 30.0619 }
-                city: { type: string, maxLength: 255, example: Kigali }
+                name: { type: string, maxLength: 255, example: Musanze }
+                province:
+                  type: string
+                  enum: [Kigali City, Northern Province, Southern Province, Eastern Province, Western Province]
+                  example: Northern Province
+                  description: Optional.
+                lat: { type: number, example: -1.4989 }
+                lng: { type: number, example: 29.6340 }
+                city: { type: string, maxLength: 255, description: Optional free-text city. }
       responses:
         '201':
           description: Location created
@@ -602,8 +766,18 @@ paths:
               schema:
                 type: object
                 properties:
-                  location: { $ref: '#/components/schemas/Location' }
+                  id: { type: string, format: uuid }
+                  name: { type: string, example: Musanze }
+                  province: { type: string, example: Northern Province }
+                  lat: { type: number, example: -1.4989 }
+                  lng: { type: number, example: 29.6340 }
+                  created_at: { type: string, format: date-time }
         '403': { description: Forbidden }
+        '409':
+          description: Location name already exists (`LOCATION_ALREADY_EXISTS`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /locations/{id}:
     parameters:
@@ -613,18 +787,24 @@ paths:
       summary: Get location
       responses:
         '200':
-          description: Location
+          description: Location detail
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  location: { $ref: '#/components/schemas/Location' }
+                  id: { type: string, format: uuid }
+                  name: { type: string, example: Musanze }
+                  province: { type: string, nullable: true, example: Northern Province }
+                  lat: { type: number, example: -1.4989 }
+                  lng: { type: number, example: 29.6340 }
+                  created_at: { type: string, format: date-time }
+                  updated_at: { type: string, format: date-time }
         '404': { description: Not found }
     patch:
       tags: [Locations]
       summary: Update location
-      description: Requires `update` on `Location` (`platform-admin` only).
+      description: Requires `update` on `Location`.
       requestBody:
         required: true
         content:
@@ -634,6 +814,9 @@ paths:
               minProperties: 1
               properties:
                 name: { type: string, maxLength: 255 }
+                province:
+                  type: string
+                  enum: [Kigali City, Northern Province, Southern Province, Eastern Province, Western Province]
                 lat: { type: number }
                 lng: { type: number }
                 city: { type: string, maxLength: 255 }
@@ -645,17 +828,32 @@ paths:
               schema:
                 type: object
                 properties:
-                  location: { $ref: '#/components/schemas/Location' }
+                  id: { type: string, format: uuid }
+                  name: { type: string, example: Musanze }
+                  province: { type: string, nullable: true, example: Northern Province }
+                  lat: { type: number, example: -1.4989 }
+                  lng: { type: number, example: 29.6340 }
+                  updated_at: { type: string, format: date-time }
         '403': { description: Forbidden }
         '404': { description: Not found }
+        '409':
+          description: Location name already exists (`LOCATION_ALREADY_EXISTS`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
     delete:
       tags: [Locations]
       summary: Delete location
-      description: Requires `delete` on `Location` (`platform-admin` only).
+      description: Requires `delete` on `Location`. Fails if the location is referenced by any route.
       responses:
         '204': { description: Deleted }
         '403': { description: Forbidden }
         '404': { description: Not found }
+        '409':
+          description: Location referenced by one or more routes (`LOCATION_IN_USE`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   # ── Routes ───────────────────────────────────────────────────────────────────
 
@@ -664,50 +862,115 @@ paths:
       tags: [Routes]
       summary: List routes
       description: |
-        Public for passengers (browse the stop network).
-        Authenticated staff see their org's routes; platform-admin see all.
+        Paginated. Public callers see active routes only; authenticated staff see their
+        org's routes (active + inactive), platform-admin see all. Filter by name (`q`)
+        and `status`.
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+          description: Case-insensitive name search.
+        - in: query
+          name: status
+          schema: { type: string, enum: [active, inactive] }
+        - $ref: '#/components/parameters/QueryPage'
+        - $ref: '#/components/parameters/QueryLimit'
       responses:
         '200':
-          description: Route list
+          description: Paginated route list
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  routes: { type: array, items: { $ref: '#/components/schemas/Route' } }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        name: { type: string, example: 'Kigali — Gisenyi' }
+                        status: { type: string, enum: [active, inactive], example: active }
+                        stops_count: { type: integer, example: 3 }
+                        origin:
+                          type: object
+                          properties:
+                            id: { type: string, format: uuid }
+                            name: { type: string, example: Kigali }
+                        destination:
+                          type: object
+                          properties:
+                            id: { type: string, format: uuid }
+                            name: { type: string, example: Gisenyi }
+                        created_at: { type: string, format: date-time }
+                  total: { type: integer, example: 12 }
+                  page: { type: integer, example: 1 }
+                  limit: { type: integer, example: 20 }
     post:
       tags: [Routes]
       summary: Create route
-      description: Requires `create` on `Route` (org-admin or platform-admin).
+      description: |
+        Requires `create` on `Route` (org-admin or platform-admin). The route is created
+        **inactive** — it can't be activated until every stop-pair price is defined. `name`
+        is optional; when omitted it is auto-generated from the first and last stop names
+        (e.g. "Kigali — Gisenyi").
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [stop_ids]
+              required: [stops]
               properties:
-                stop_ids:
+                name: { type: string, maxLength: 255, example: 'Kigali — Gisenyi' }
+                stops:
                   type: array
-                  items: { type: string, format: uuid }
-                  minItems: 2
-                  description: Ordered list of stop IDs — first is origin, last is destination.
-                  example: ['uuid-stop-1', 'uuid-stop-2', 'uuid-stop-3']
-                name: { type: string, maxLength: 255, example: Kigali – Huye Express }
+                  description: At least 2 stops; ordered by `order` (first is origin, last is destination).
+                  items:
+                    type: object
+                    required: [location_id, order]
+                    properties:
+                      location_id: { type: string, format: uuid }
+                      order: { type: integer, minimum: 1 }
                 org_id:
                   type: string
                   format: uuid
-                  description: Platform-admin only — assign route to a specific org. Omit to create a shared route.
+                  description: Platform scope only — create under a specific org. Omit for a shared platform route.
       responses:
         '201':
-          description: Route created
+          description: Route created (inactive)
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  route: { $ref: '#/components/schemas/Route' }
+                  id: { type: string, format: uuid }
+                  name: { type: string, example: 'Kigali — Gisenyi' }
+                  status: { type: string, enum: [active, inactive], example: inactive }
+                  stops:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid, description: route_stop id }
+                        location_id: { type: string, format: uuid }
+                        name: { type: string, example: Kigali }
+                        lat: { type: number, example: -1.9441 }
+                        lng: { type: number, example: 30.0619 }
+                        order: { type: integer, example: 1 }
+                  created_at: { type: string, format: date-time }
         '403': { description: Forbidden }
+        '404': { description: A stop was not found (`STOP_NOT_FOUND`) }
+        '409':
+          description: Route name already exists (`ROUTE_ALREADY_EXISTS`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: Fewer than 2 stops (`INSUFFICIENT_STOPS`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /routes/{id}:
     parameters:
@@ -717,18 +980,18 @@ paths:
       summary: Get route
       responses:
         '200':
-          description: Route with ordered stops
+          description: Route detail
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  route: { $ref: '#/components/schemas/Route' }
+              schema: { $ref: '#/components/schemas/RouteDetail' }
         '404': { description: Not found }
     patch:
       tags: [Routes]
       summary: Update route
-      description: Requires `update` on `Route`.
+      description: |
+        Requires `update` on `Route`. Set `status: active` to activate — this fails with
+        400 `PRICES_INCOMPLETE` unless every stop-pair price is defined. `stops` fully
+        replaces the ordered stop list.
       requestBody:
         required: true
         content:
@@ -738,26 +1001,51 @@ paths:
               minProperties: 1
               properties:
                 name: { type: string, maxLength: 255 }
-                is_active: { type: boolean }
+                status: { type: string, enum: [active, inactive] }
+                stops:
+                  type: array
+                  items:
+                    type: object
+                    required: [location_id, order]
+                    properties:
+                      location_id: { type: string, format: uuid }
+                      order: { type: integer, minimum: 1 }
       responses:
         '200':
-          description: Updated route
+          description: Updated route (same shape as GET)
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  route: { $ref: '#/components/schemas/Route' }
+              schema: { $ref: '#/components/schemas/RouteDetail' }
+        '400':
+          description: Prices incomplete — cannot activate (`PRICES_INCOMPLETE`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '403': { description: Forbidden }
         '404': { description: Not found }
+        '409':
+          description: Route name already exists (`ROUTE_ALREADY_EXISTS`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: Fewer than 2 stops (`INSUFFICIENT_STOPS`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
     delete:
       tags: [Routes]
       summary: Delete route
-      description: Requires `delete` on `Route`. Fails if active trips reference this route.
+      description: Requires `delete` on `Route`. Fails if any trip references this route.
       responses:
         '204': { description: Deleted }
         '403': { description: Forbidden }
         '404': { description: Not found }
+        '409':
+          description: Route referenced by one or more trips (`ROUTE_IN_USE`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /routes/{id}/stops:
     post:
@@ -833,26 +1121,106 @@ paths:
   /prices:
     get:
       tags: [Prices]
-      summary: Get prices for a route
-      description: Public. Returns all stop-pair prices for a given route.
+      summary: Get a fare or list the price grid
+      description: |
+        Public. **With both `boarding_stop_id` and `alighting_stop_id`** → the single
+        effective fare for that pair (404 if none). **Otherwise** → the paginated
+        price-matrix grid, optionally filtered by a single origin (`boarding_stop_id`)
+        or destination (`alighting_stop_id`).
       parameters:
         - in: query
-          name: route_id
-          required: true
+          name: boarding_stop_id
           schema: { type: string, format: uuid }
+        - in: query
+          name: alighting_stop_id
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/QueryPage'
+        - $ref: '#/components/parameters/QueryLimit'
       responses:
         '200':
-          description: Price list
+          description: A single fare (both stops) or the paginated grid (otherwise).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    description: Single fare (both stops supplied).
+                    properties:
+                      boarding_stop_id: { type: string, format: uuid }
+                      alighting_stop_id: { type: string, format: uuid }
+                      amount: { type: integer, example: 2000 }
+                      currency: { type: string, example: RWF }
+                  - type: object
+                    description: Paginated price-matrix grid.
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: string, format: uuid }
+                            boarding_stop:
+                              type: object
+                              properties:
+                                id: { type: string, format: uuid }
+                                name: { type: string, example: Kigali }
+                            alighting_stop:
+                              type: object
+                              properties:
+                                id: { type: string, format: uuid }
+                                name: { type: string, example: Musanze }
+                            amount: { type: integer, example: 2000 }
+                            currency: { type: string, example: RWF }
+                      total: { type: integer, example: 12 }
+                      page: { type: integer, example: 1 }
+                      limit: { type: integer, example: 50 }
+        '404':
+          description: No fare for this stop pair (`PRICE_NOT_FOUND`, single-fare mode)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    put:
+      tags: [Prices]
+      summary: Upsert a fare
+      description: |
+        Idempotent — creates or updates the fare for a stop pair. Requires `create` on
+        `Price`. Org-scope callers set their own override; platform-scope callers set the
+        shared default.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [boarding_stop_id, alighting_stop_id, amount]
+              properties:
+                boarding_stop_id: { type: string, format: uuid }
+                alighting_stop_id: { type: string, format: uuid }
+                amount: { type: integer, minimum: 0, example: 2000 }
+                currency: { type: string, minLength: 3, maxLength: 3, example: RWF }
+      responses:
+        '200':
+          description: Fare upserted
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  prices: { type: array, items: { $ref: '#/components/schemas/Price' } }
+                  id: { type: string, format: uuid }
+                  boarding_stop_id: { type: string, format: uuid }
+                  alighting_stop_id: { type: string, format: uuid }
+                  amount: { type: integer, example: 2000 }
+                  currency: { type: string, example: RWF }
+        '403': { description: Forbidden }
+        '422':
+          description: Same stop, or a stop does not exist (`INVALID_STOP_PAIR`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
     post:
       tags: [Prices]
       summary: Create price
-      description: Requires `create` on `Price`. To set multiple prices at once use `POST /prices/bulk`.
+      description: Requires `create` on `Price`. Prefer `PUT /prices` (idempotent); for bulk use `POST /prices/bulk`.
       requestBody:
         required: true
         content:
@@ -1124,9 +1492,9 @@ paths:
         `{ data, total, page, limit }` envelope of `TripSearchResult` items (flattened
         origin/destination, company, and full-route "from" price), cached for 30 s.
 
-        **Staff (org scope)** — returns a paginated management list for their org.
-        Supports filtering by `route_id`, `status`, `driver_id`, `from`/`to`, and
-        `unassigned_bus` / `unassigned_driver` flags.
+        **Staff (org scope)** — returns a paginated `CalendarTrip` list for their org
+        (the trips management / calendar view). Filter by `route_id`, `status`,
+        `driver_id`, `from`/`to`, and `unassigned_only` (trips missing a bus or driver).
 
         **Platform-admin** — same as staff but across all orgs; filter by `org_id` as needed.
       parameters:
@@ -1165,28 +1533,34 @@ paths:
         - in: query
           name: to
           schema: { type: string, format: date-time }
+        - in: query
+          name: unassigned_only
+          schema: { type: boolean }
+          description: '**Staff only.** When true, only trips missing a bus or a driver.'
         - $ref: '#/components/parameters/QueryPage'
         - $ref: '#/components/parameters/QueryLimit'
       responses:
         '200':
           description: |
-            Passenger search returns `PaginatedTripSearch`; staff/admin list returns `PaginatedTrips`.
+            Passenger search returns `PaginatedTripSearch`; staff/admin list returns `PaginatedTripCalendar`.
           content:
             application/json:
               schema:
                 oneOf:
                   - $ref: '#/components/schemas/PaginatedTripSearch'
-                  - $ref: '#/components/schemas/PaginatedTrips'
+                  - $ref: '#/components/schemas/PaginatedTripCalendar'
 
     post:
       tags: [Trips]
       summary: Create trip series
       description: |
-        Creates one or more trip instances from a series definition.
-        Requires `create` on `Trip` (dispatcher or org-admin).
+        Creates a trip or a series of trips. The backend creates a `trip_series` record
+        and generates all instances. Requires `create` on `Trip` (dispatcher or org-admin).
 
-        All times are in UTC. `departure_time` is stored as a wall-clock time string (`HH:MM`)
-        and applied to each generated date.
+        Bus and driver are always optional. **For repeating series** (`repeat_daily: true`
+        or a `frequency_minutes` is set) `bus_id`/`driver_id` are **ignored** — assignment
+        is done per trip afterwards. For a one-off trip, a `bus_id` auto-populates
+        `total_seats` from bus capacity; with no bus, `total_seats` is required.
 
         | Config | Result |
         |---|---|
@@ -1195,6 +1569,8 @@ paths:
         | `repeat_daily: true`, `frequency_minutes: 60` | Trips at 1-hour intervals per day until 22:00 |
 
         Valid `frequency_minutes` values: `30`, `60`, `90`, `120`, `180`, `240`.
+
+        Returns all generated instances so the calendar can place tiles without a refetch.
       requestBody:
         required: true
         content:
@@ -1204,19 +1580,19 @@ paths:
               required: [route_id, departure_time, starts_on]
               properties:
                 route_id: { type: string, format: uuid }
-                bus_id: { type: string, format: uuid }
-                driver_id: { type: string, format: uuid }
-                total_seats: { type: integer, minimum: 1, description: Overrides the bus default if provided. }
+                bus_id: { type: string, format: uuid, description: Optional; applied only to one-off trips. }
+                driver_id: { type: string, format: uuid, description: Optional; applied only to one-off trips. }
+                total_seats: { type: integer, minimum: 1, description: Required for a one-off trip with no bus; taken from bus capacity otherwise. }
                 is_express: { type: boolean, default: false }
                 departure_time:
                   type: string
                   pattern: '^\d{2}:\d{2}$'
-                  example: '08:00'
+                  example: '06:00'
                   description: Wall-clock departure time in HH:MM (UTC).
                 starts_on:
                   type: string
                   format: date
-                  example: '2026-06-01'
+                  example: '2026-04-20'
                 repeat_daily: { type: boolean, default: false }
                 frequency_minutes:
                   type: integer
@@ -1236,10 +1612,19 @@ paths:
               schema:
                 type: object
                 properties:
-                  trips: { type: array, items: { $ref: '#/components/schemas/Trip' } }
-                  series_id: { type: string, format: uuid }
+                  trips_created: { type: integer, example: 62 }
+                  trips: { type: array, items: { $ref: '#/components/schemas/CalendarTrip' } }
         '403': { description: Forbidden }
-        '404': { description: Route or bus not found }
+        '404':
+          description: Route, bus, or driver not found (`ROUTE_NOT_FOUND` / `BUS_NOT_FOUND` / `DRIVER_NOT_FOUND`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: Validation failed (`TOTAL_SEATS_REQUIRED` / `INVALID_DATE_RANGE`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /trips/{id}:
     parameters:
@@ -1247,16 +1632,13 @@ paths:
     get:
       tags: [Trips]
       summary: Get trip
-      description: Public. Returns trip details including route and bus.
+      description: Public. Returns the trip detail view (route, bus, driver, series, occupancy, timestamps).
       responses:
         '200':
-          description: Trip
+          description: Trip detail
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  trip: { $ref: '#/components/schemas/Trip' }
+              schema: { $ref: '#/components/schemas/TripDetail' }
         '404': { description: Not found }
     patch:
       tags: [Trips]
@@ -1265,8 +1647,10 @@ paths:
         Requires `update` on `Trip`.
 
         `scope` controls how many trip instances are updated:
-        - `this` — only the selected trip.
-        - `future` — this trip and all future siblings in the same series (same `series_id`, `departure_at ≥ now`).
+        - `this` — only the selected trip. Returns the updated `CalendarTrip`. A trip with
+          confirmed bookings is frozen and returns **400 `HAS_BOOKINGS`**.
+        - `future` — this trip and all future siblings in the same series (same `series_id`,
+          `departure_at ≥ this trip`). Trips with bookings are skipped into `skipped[]`.
       requestBody:
         required: true
         content:
@@ -1277,36 +1661,55 @@ paths:
               minProperties: 2
               properties:
                 scope: { type: string, enum: [this, future] }
-                departure_time: { type: string, pattern: '^\d{2}:\d{2}$', example: '09:00' }
-                bus_id: { type: string, format: uuid, nullable: true }
-                driver_id: { type: string, format: uuid, nullable: true }
+                departure_at: { type: string, format: date-time, example: '2026-04-20T07:00:00.000Z' }
+                bus_id: { type: string, format: uuid, nullable: true, description: Null removes the bus assignment. }
+                driver_id: { type: string, format: uuid, nullable: true, description: Null removes the driver assignment. }
                 total_seats: { type: integer, minimum: 1 }
                 is_express: { type: boolean }
                 cancellation_allowed: { type: boolean }
       responses:
         '200':
-          description: Updated trip(s)
+          description: |
+            scope `this` → the updated `CalendarTrip`; scope `future` → `{ updated, skipped[] }`.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  updated: { type: array, items: { $ref: '#/components/schemas/Trip' } }
+                oneOf:
+                  - $ref: '#/components/schemas/CalendarTrip'
+                  - type: object
+                    properties:
+                      updated: { type: integer, example: 4 }
+                      skipped:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            trip_id: { type: string, format: uuid }
+                            departure_at: { type: string, format: date-time }
+                            reason: { type: string, example: HAS_BOOKINGS }
+        '400':
+          description: Trip has confirmed bookings (`HAS_BOOKINGS`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '403': { description: Forbidden }
-        '404': { description: Not found }
+        '404':
+          description: Trip, bus, or driver not found (`BUS_NOT_FOUND` / `DRIVER_NOT_FOUND`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
     delete:
       tags: [Trips]
-      summary: Cancel trip
+      summary: Delete trip
       description: |
-        Requires `cancel` on `Trip`.
+        Requires `cancel` on `Trip`. Hard-deletes trips; **no refunds are issued**.
 
-        `scope` controls which trips are cancelled:
-        - `this` — only the selected trip.
-        - `future` — this trip and all future siblings in the same series.
-
-        Trips that already have confirmed tickets are **skipped** (not cancelled) and
-        returned in `skipped[]`. All others are set to `cancelled` and passengers are
-        notified via SMS.
+        `scope` controls which trips are deleted:
+        - `this` — only the selected trip. Returns **204**; a trip with confirmed bookings
+          returns **400 `HAS_BOOKINGS`** instead.
+        - `future` — this trip and all future scheduled siblings in the series. Trips with
+          bookings are skipped into `skipped[]`; the series is paused so they are not
+          re-generated. Returns `{ deleted, skipped[] }`.
       requestBody:
         required: true
         content:
@@ -1316,20 +1719,29 @@ paths:
               required: [scope]
               properties:
                 scope: { type: string, enum: [this, future] }
-                reason: { type: string, maxLength: 500 }
       responses:
+        '204': { description: 'scope `this` deleted (no bookings).' }
         '200':
-          description: Cancellation result
+          description: 'scope `future` result.'
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  cancelled: { type: array, items: { type: string, format: uuid } }
+                  deleted: { type: integer, example: 4 }
                   skipped:
                     type: array
-                    items: { type: string, format: uuid }
-                    description: Trip IDs skipped because they have confirmed tickets.
+                    items:
+                      type: object
+                      properties:
+                        trip_id: { type: string, format: uuid }
+                        departure_at: { type: string, format: date-time }
+                        reason: { type: string, example: HAS_BOOKINGS }
+        '400':
+          description: Trip has confirmed bookings (`HAS_BOOKINGS`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '403': { description: Forbidden }
         '404': { description: Not found }
 
@@ -1401,6 +1813,29 @@ paths:
         '403': { description: Forbidden }
         '404': { description: Not found }
 
+  /trips/{id}/tickets:
+    parameters:
+      - $ref: '#/components/parameters/PathId'
+    get:
+      tags: [Trips]
+      summary: List a trip's tickets
+      description: Requires `read` on `Ticket`. Paginated ticket list for the trip detail screen.
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string, enum: [confirmed, pending, cancelled] }
+          description: Filter by status bucket.
+        - $ref: '#/components/parameters/QueryPage'
+        - $ref: '#/components/parameters/QueryLimit'
+      responses:
+        '200':
+          description: Paginated tickets
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaginatedTripTickets' }
+        '403': { description: Forbidden }
+        '404': { description: Not found }
+
   # ── Tickets ──────────────────────────────────────────────────────────────────
 
   /tickets:
@@ -1446,18 +1881,18 @@ paths:
       tags: [Tickets]
       summary: Book a ticket
       description: |
-        Books a ticket for a trip between two stops.
+        Books a ticket for a trip between two stops. `payment_method` selects the flow:
 
-        **Authenticated passenger (wallet)** — omit `payment_method` and `phone`.
-        The service checks wallet balance via the payment-service. Returns `402` if insufficient.
+        - **`wallet`** — authenticated passenger; spends wallet balance (sudo step-up
+          required via `x-sudo-token`). `402` if insufficient. An authenticated passenger
+          that omits `payment_method` defaults here.
+        - **`mtn` / `airtel`** — mobile money; requires `phone` and `passenger_name`. The
+          network is verified from the phone prefix (`070/078/079` → MTN, `072/073/074` → Airtel).
+        - **`cash`** — staff walk-in sale; requires `create` on `Ticket` and `passenger_name`
+          (`phone` optional). Confirmed asynchronously via the payment-service like the others.
 
-        **Guest / MoMo / Airtel** — include `payment_method` (`mtn` or `airtel`), `phone`,
-        and `passenger_name`. The network is detected automatically from the phone prefix:
-        - `070`, `078`, `079` → MTN
-        - `072`, `073`, `074` → Airtel
-
-        In both cases the response is `202 Accepted` with a `ticket_id`. Open
-        `GET /tickets/{id}/stream` immediately to receive the payment confirmation.
+        All flows return `202 Accepted` with a `ticket_id`; open `GET /tickets/{id}/stream`
+        to receive the payment confirmation.
       requestBody:
         required: true
         content:
@@ -1472,18 +1907,18 @@ paths:
                 seats_count: { type: integer, minimum: 1, default: 1 }
                 payment_method:
                   type: string
-                  enum: [mtn, airtel]
-                  description: Required for guest bookings. Omit for wallet payments.
+                  enum: [wallet, mtn, airtel, cash]
+                  description: Omit for an authenticated passenger wallet purchase.
                 phone:
                   type: string
                   maxLength: 20
-                  example: '0788000001'
-                  description: Required for guest bookings. Network auto-detected from prefix.
+                  example: '+250788123456'
+                  description: Required for mtn/airtel; optional for cash.
                 passenger_name:
                   type: string
                   maxLength: 255
-                  example: Jean Uwimana
-                  description: Required for guest bookings.
+                  example: Kalisa Nkusi
+                  description: Required for mtn/airtel and cash.
       responses:
         '202':
           description: Booking initiated — open `/tickets/{id}/stream` for status
@@ -1493,49 +1928,18 @@ paths:
                 type: object
                 properties:
                   ticket_id: { type: string, format: uuid }
-        '402': { description: Insufficient wallet balance }
-        '404': { description: Trip or price not found }
-        '409': { description: No seats available }
-
-  /tickets/cash:
-    post:
-      tags: [Tickets]
-      summary: Book a cash ticket
-      description: |
-        Issues a cash ticket for a passenger boarding at the stop.
-        Requires `create` on `Ticket` (dispatcher role only).
-
-        Seat is held for 30 seconds while the payment-service records the cash transaction.
-        Open `GET /tickets/{id}/stream` to confirm.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [trip_id, boarding_stop_id, alighting_stop_id, passenger_name]
-              properties:
-                trip_id: { type: string, format: uuid }
-                boarding_stop_id: { type: string, format: uuid }
-                alighting_stop_id: { type: string, format: uuid }
-                seats_count: { type: integer, minimum: 1, default: 1 }
-                passenger_name: { type: string, maxLength: 255 }
-                passenger_phone:
-                  type: string
-                  maxLength: 20
-                  description: Optional — used for SMS receipt if provided.
-      responses:
-        '202':
-          description: Cash ticket issued — open `/tickets/{id}/stream` for confirmation
+        '400':
+          description: No seats available (`NO_SEATS_AVAILABLE`, includes `available`)
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  ticket_id: { type: string, format: uuid }
-        '403': { description: Forbidden }
-        '404': { description: Trip or price not found }
-        '409': { description: No seats available }
+              schema: { $ref: '#/components/schemas/Error' }
+        '402': { description: Insufficient wallet balance }
+        '403': { description: Forbidden (cash without create:Ticket) }
+        '404':
+          description: Trip or price not found (`PRICE_NOT_FOUND`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /tickets/me:
     get:
@@ -1584,7 +1988,7 @@ paths:
       description: |
         Server-sent events stream for real-time payment confirmation.
 
-        Open this endpoint **immediately** after `POST /tickets` or `POST /tickets/cash`.
+        Open this endpoint **immediately** after `POST /tickets`.
         If the ticket is already in a terminal state when the connection opens, the terminal
         event is emitted immediately and the stream closes.
 

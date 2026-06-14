@@ -7,8 +7,11 @@ import * as ctrl from '../controllers/locations.controller.js';
 
 const router = Router();
 
+const PROVINCES = ['Kigali City', 'Northern Province', 'Southern Province', 'Eastern Province', 'Western Province'];
+
 const createSchema = Joi.object({
   name: Joi.string().max(255).required(),
+  province: Joi.string().valid(...PROVINCES).optional(),
   lat: Joi.number().required(),
   lng: Joi.number().required(),
   city: Joi.string().max(255).optional(),
@@ -16,6 +19,7 @@ const createSchema = Joi.object({
 
 const updateSchema = Joi.object({
   name: Joi.string().max(255).optional(),
+  province: Joi.string().valid(...PROVINCES).optional(),
   lat: Joi.number().optional(),
   lng: Joi.number().optional(),
   city: Joi.string().max(255).optional(),

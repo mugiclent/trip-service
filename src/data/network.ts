@@ -97,26 +97,25 @@ export const provinceFor = ([lat, lng]: [number, number]): string => {
 // Corridor routes (platform defaults) with ordered intermediate stops — the real
 // RURA corridors, with main towns sequenced by geography.
 export const ROUTES: { name: string; stops: string[] }[] = [
-  { name: 'Nyabugogo — Gicumbi — Gatuna', stops: ['Nyabugogo', 'Base', 'Rukomo', 'Gicumbi', 'Gatuna'] },
+  { name: 'Nyabugogo — Gicumbi — Gatuna', stops: ['Nyabugogo', 'Gaseke', 'Rukomo', 'Gicumbi', 'Gatuna'] },
   { name: 'Nyabugogo — Musanze — Rubavu', stops: ['Nyabugogo', 'Base', 'Gakenke', 'Musanze', 'Mukamira', 'Rubavu'] },
-  { name: 'Gicumbi — Nyagatare', stops: ['Gicumbi', 'Ngarama', 'Karama', 'Nyagatare'] },
+  { name: 'Gicumbi — Nyagatare', stops: ['Gicumbi', 'Ngarama', 'Nyagatare'] },
   { name: 'Nyabugogo — Kayonza — Nyagatare', stops: ['Nyabugogo', 'Rwamagana', 'Kayonza', 'Gabiro', 'Nyagatare'] },
   { name: 'Nyabugogo — Rwamagana — Rusumo', stops: ['Nyabugogo', 'Rwamagana', 'Kayonza', 'Kabarondo', 'Ngoma', 'Rusumo'] },
-  { name: 'Nyabugogo — Bugesera — Zaza', stops: ['Nyabugogo', 'Nyamata', 'Ramiro', 'Zaza'] },
-  { name: 'Nyabugogo — Muhanga — Huye — Nyamagabe', stops: ['Nyabugogo', 'Kamonyi', 'Muhanga', 'Ruhango', 'Nyanza', 'Huye', 'Nyamagabe'] },
+  { name: 'Nyabugogo — Bugesera — Zaza', stops: ['Kicukiro (Nyanza)', 'Nyamata', 'Ramiro', 'Zaza'] },
+  { name: 'Nyabugogo — Muhanga — Huye — Nyamagabe', stops: ['Nyabugogo', 'Muhanga', 'Ruhango', 'Nyanza', 'Huye', 'Nyamagabe'] },
   { name: 'Nyabugogo — Muhanga — Karongi — Kamembe', stops: ['Nyabugogo', 'Muhanga', 'Karongi', 'Rubengera', 'Nyamasheke', 'Kamembe'] },
   { name: 'Nyabugogo — Muhanga — Ngororero — Rubavu', stops: ['Nyabugogo', 'Muhanga', 'Buringa', 'Gatumba', 'Ngororero', 'Mukamira', 'Rubavu'] },
-  { name: 'Nyabugogo — Nyabihu — Rubavu', stops: ['Nyabugogo', 'Musanze', 'Mukamira', 'Kabali', 'Mahoko', 'Rubavu'] },
+  { name: 'Nyabugogo — Nyabihu — Rubavu', stops: ['Nyabugogo', 'Musanze', 'Mukamira', 'Kabali', 'Rubavu'] },
   { name: 'Rubavu — Karongi — Kamembe', stops: ['Rubavu', 'Gisiza', 'Congo Nile', 'Karongi', 'Rubengera', 'Kamembe'] },
 ];
 
 /**
- * Fares from the RURA INTERCITY 2026 tariff (RWF), one directional entry per
- * tariff row; bootstrap mirrors each into the reverse direction. Stop-pairs whose
- * stops are not in STOPS (a handful the tariff names but the geography CSV omits,
- * e.g. Rushaki/Bugarama/Cimerwa/Ntango) are skipped by bootstrap with a warning.
+ * The real RURA INTERCITY 2026 tariff (RWF), one directional entry per tariff
+ * row. **Currently not exported as the live fares** — see PRICES below. Kept so
+ * the real tariff can be restored (export it as PRICES instead of buildFlatPrices).
  */
-export const PRICES: [string, string, number][] = [
+const TARIFF_2026: [string, string, number][] = [
   // ── Northern: Nyabugogo — Gicumbi — Gatuna ────────────────────────────────
   ['Rukomo', 'Gicumbi', 416], ['Gaseke', 'Rukomo', 910], ['Miyove', 'Base', 951],
   ['Nyabugogo', 'Gaseke', 1169], ['Gicumbi', 'Tetero', 1188], ['Gaseke', 'Gicumbi', 1247],
@@ -333,6 +332,11 @@ export const PRICES: [string, string, number][] = [
   ['Gakeri', 'Kamembe', 7365], ['Rubavu', 'Nyamasheke', 7721], ['Rubavu', 'Ntendezi', 7979],
   ['Rubavu', 'Kamembe', 9009],
 ];
+
+// TEMP: flat 100 RWF over the REAL tariff stop-pairs only (no invented pairs).
+// To restore real pricing, drop the `.map(...)` and export TARIFF_2026 directly.
+const FLAT_FARE = 100;
+export const PRICES: [string, string, number][] = TARIFF_2026.map(([a, b]) => [a, b, FLAT_FARE]);
 
 export const BUSES = [
   { plate: 'RAD 100 A', type: 'Coaster', total_seats: 30 },

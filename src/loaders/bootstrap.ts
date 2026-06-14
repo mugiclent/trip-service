@@ -85,6 +85,9 @@ export const bootstrap = async (): Promise<BootstrapResult> => {
         update: { stop_id: stopId[r.stops[i]] },
       });
     }
+    // Prune any route_stops beyond the current length (a route that was shortened) —
+    // upsert alone never removes them.
+    await prisma.routeStop.deleteMany({ where: { route_id: route.id, order: { gt: r.stops.length } } });
 
     routes.push({ name: r.name, id: route.id, durationMin: routeDurationMin(r.stops) });
   }

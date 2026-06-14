@@ -116,74 +116,103 @@ export const createTrips = async (
   };
 };
 
+// Public passenger search payload — only the fields the search-results list needs.
+const tripSearchInclude = {
+  org: { select: { id: true, name: true, logo_path: true } },
+  route: { include: { origin_stop: true, destination_stop: true } },
+  bus: { select: { id: true, plate: true, type: true } },
+} as const;
+
+const stopBrief = (s: { id: string; name: string; lat: Prisma.Decimal; lng: Prisma.Decimal }) => ({
+  id: s.id,
+  name: s.name,
+  lat: Number(s.lat),
+  lng: Number(s.lng),
+});
+
+/**
+ * Public trip search for the passenger discovery screen. Free-text `q` matches the
+ * route name or either endpoint name; `origin_id` and `company_id` narrow further;
+ * `date` is a Kigali calendar day (defaults to "from now" when absent). `price` is
+ * the full-route "from" fare (origin → destination of the route); the exact stop-pair
+ * fare is resolved later once the passenger picks an alighting stop on the detail page.
+ */
 export const searchTrips = async (params: {
-  boarding_stop_id: string;
-  alighting_stop_id: string;
-  date: string;
-  seats: number;
+  q?: string;
+  origin_id?: string;
+  company_id?: string;
+  date?: string;
+  page?: number;
+  limit?: number;
 }) => {
-  // "date" is a Kigali calendar day, not a UTC day.
-  const { start: dateStart, end: dateEnd } = localDayBoundsUtc(params.date);
+  const page = Math.max(1, params.page ?? 1);
+  const limit = Math.min(100, Math.max(1, params.limit ?? 20));
+  const skip = (page - 1) * limit;
 
-  const routes = await prisma.route.findMany({
-    where: {
+  // "date" is a Kigali calendar day, not a UTC day; absent → upcoming trips from now.
+  const departureFilter = params.date
+    ? (() => {
+        const { start, end } = localDayBoundsUtc(params.date!);
+        return { gte: start, lte: end };
+      })()
+    : { gte: new Date() };
+
+  const where: Prisma.TripWhereInput = {
+    status: 'scheduled',
+    available_seats: { gte: 1 },
+    departure_at: departureFilter,
+    org: { status: 'active' },
+    ...(params.company_id ? { org_id: params.company_id } : {}),
+    route: {
       is_active: true,
-      route_stops: {
-        some: { stop_id: params.boarding_stop_id },
-      },
+      ...(params.origin_id ? { origin_stop_id: params.origin_id } : {}),
+      ...(params.q
+        ? {
+            OR: [
+              { name: { contains: params.q, mode: 'insensitive' } },
+              { origin_stop: { name: { contains: params.q, mode: 'insensitive' } } },
+              { destination_stop: { name: { contains: params.q, mode: 'insensitive' } } },
+            ],
+          }
+        : {}),
     },
-    include: {
-      route_stops: { orderBy: { order: 'asc' } },
-    },
-  });
+  };
 
-  const validRouteIds = routes
-    .filter((r) => {
-      const stops = r.route_stops;
-      const boardingOrder = stops.find((s) => s.stop_id === params.boarding_stop_id)?.order ?? -1;
-      const alightingOrder = stops.find((s) => s.stop_id === params.alighting_stop_id)?.order ?? -1;
-      return boardingOrder > 0 && alightingOrder > 0 && boardingOrder < alightingOrder;
-    })
-    .map((r) => r.id);
+  const [trips, total] = await Promise.all([
+    prisma.trip.findMany({
+      where,
+      include: tripSearchInclude,
+      orderBy: { departure_at: 'asc' },
+      skip,
+      take: limit,
+    }),
+    prisma.trip.count({ where }),
+  ]);
 
-  if (validRouteIds.length === 0) return [];
-
-  const trips = await prisma.trip.findMany({
-    where: {
-      route_id: { in: validRouteIds },
-      status: 'scheduled',
-      departure_at: { gte: dateStart, lte: dateEnd },
-      available_seats: { gte: params.seats },
-      org: { status: 'active' },
-    },
-    include: tripWithDetails,
-    orderBy: { departure_at: 'asc' },
-  });
-
-  // One grouped count for is_only_in_series instead of a count per trip.
-  const seriesIds = [...new Set(trips.map((t) => t.series_id).filter((s): s is string => !!s))];
-  const seriesCounts = seriesIds.length
-    ? await prisma.trip.groupBy({
-        by: ['series_id'],
-        where: { series_id: { in: seriesIds }, status: { not: 'cancelled' } },
-        _count: { _all: true },
-      })
-    : [];
-  const activeBySeries = new Map(seriesCounts.map((c) => [c.series_id, c._count._all]));
-
-  const tripsWithExtras = await Promise.all(
+  const data = await Promise.all(
     trips.map(async (trip) => {
-      const price = await getEffectivePrice(trip.org_id, params.boarding_stop_id, params.alighting_stop_id);
-      const isOnly = trip.series_id ? (activeBySeries.get(trip.series_id) ?? 1) === 1 : true;
+      const price = await getEffectivePrice(
+        trip.org_id,
+        trip.route.origin_stop_id,
+        trip.route.destination_stop_id,
+      );
       return {
-        ...trip,
-        price: price ? { amount: price.amount, currency: price.currency } : null,
-        series: { is_only_in_series: isOnly },
+        id: trip.id,
+        origin: stopBrief(trip.route.origin_stop),
+        destination: stopBrief(trip.route.destination_stop),
+        departure_at: trip.departure_at,
+        arrival_at: trip.arrival_at,
+        price: price?.amount ?? null,
+        currency: price?.currency ?? 'RWF',
+        available_seats: trip.available_seats,
+        total_seats: trip.total_seats,
+        company: { id: trip.org.id, name: trip.org.name, logo_path: trip.org.logo_path },
+        bus: trip.bus ? { id: trip.bus.id, plate: trip.bus.plate, type: trip.bus.type } : null,
       };
     }),
   );
 
-  return tripsWithExtras;
+  return { data, total, page, limit };
 };
 
 export const getTripById = async (id: string) => {

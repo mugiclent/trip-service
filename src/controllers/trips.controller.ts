@@ -24,15 +24,24 @@ export const list = async (req: Request, res: Response, next: NextFunction): Pro
       return void res.status(200).json(result);
     }
 
-    const q = req.query as { boarding_stop_id: string; alighting_stop_id: string; date: string; seats?: string };
-    const trips = await tripsService.searchTrips({
-      boarding_stop_id: q.boarding_stop_id,
-      alighting_stop_id: q.alighting_stop_id,
+    const q = req.query as {
+      q?: string;
+      origin_id?: string;
+      company_id?: string;
+      date?: string;
+      page?: string;
+      limit?: string;
+    };
+    const result = await tripsService.searchTrips({
+      q: q.q,
+      origin_id: q.origin_id,
+      company_id: q.company_id,
       date: q.date,
-      seats: q.seats ? Number(q.seats) : 1,
+      page: q.page ? Number(q.page) : undefined,
+      limit: q.limit ? Number(q.limit) : undefined,
     });
     res.setHeader('Cache-Control', 'public, max-age=30');
-    res.status(200).json({ trips });
+    res.status(200).json(result);
   } catch (err) { next(err); }
 };
 

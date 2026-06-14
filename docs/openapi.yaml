@@ -170,8 +170,8 @@ tags:
       Trip instances represent a single scheduled departure of a bus on a route.
 
       `GET /trips` is a **dual-mode** endpoint:
-      - **Unauthenticated / passenger** — provide `boarding_stop_id`, `alighting_stop_id`, and `date`
-        to search available trips. Results are cached for 30 seconds.
+      - **Unauthenticated / passenger** — search with free-text `q` plus optional
+        `origin_id`, `company_id`, and `date` filters. Results are cached for 30 seconds.
       - **Staff (org scope)** — returns a paginated management list for their org.
       - **Platform-admin** — returns all trips across all orgs; filter by `org_id` as needed.
   - name: Tickets
@@ -393,6 +393,45 @@ components:
         page: { type: integer, example: 1 }
         limit: { type: integer, example: 20 }
 
+    TripSearchResult:
+      type: object
+      description: A single trip in the public passenger search results list.
+      properties:
+        id: { type: string, format: uuid, example: 'e5f6a7b8-0000-0000-0000-000000000005' }
+        origin: { $ref: '#/components/schemas/Location' }
+        destination: { $ref: '#/components/schemas/Location' }
+        departure_at: { type: string, format: date-time, example: '2026-04-20T08:00:00.000Z' }
+        arrival_at: { type: string, format: date-time, nullable: true, example: '2026-04-20T10:30:00.000Z' }
+        price:
+          type: integer
+          nullable: true
+          description: Full-route "from" fare in the trip's currency; null when no tariff is set.
+          example: 3500
+        currency: { type: string, example: RWF }
+        available_seats: { type: integer, example: 12 }
+        total_seats: { type: integer, example: 30 }
+        company:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string, example: Volcano Express }
+            logo_path: { type: string, nullable: true, example: logos/org-id/uuid.png }
+        bus:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string, format: uuid }
+            plate: { type: string, example: RAA 001 A }
+            type: { type: string, example: Coach }
+
+    PaginatedTripSearch:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/TripSearchResult' } }
+        total: { type: integer, example: 45 }
+        page: { type: integer, example: 1 }
+        limit: { type: integer, example: 20 }
+
     PaginatedTickets:
       type: object
       properties:
@@ -434,13 +473,21 @@ paths:
           description: Case-insensitive name search.
       responses:
         '200':
-          description: Location list
+          description: Location list (autocomplete payload — id, name, lat, lng only)
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  locations: { type: array, items: { $ref: '#/components/schemas/Location' } }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid, example: 'a1b2c3d4-0000-0000-0000-000000000001' }
+                        name: { type: string, example: Kigali }
+                        lat: { type: number, example: -1.9441 }
+                        lng: { type: number, example: 30.0619 }
     post:
       tags: [Locations]
       summary: Create location
@@ -919,9 +966,10 @@ paths:
       description: |
         **Dual-mode endpoint** — behaviour depends on the caller's identity.
 
-        **Unauthenticated or passenger** — provide `boarding_stop_id`, `alighting_stop_id`,
-        and `date` to search available trips between two stops on that day.
-        Results include the price for the requested stop pair and are cached for 30 s.
+        **Unauthenticated or passenger** — search available trips with free-text `q`
+        and optional `origin_id`, `company_id`, and `date` filters. Returns a paginated
+        `{ data, total, page, limit }` envelope of `TripSearchResult` items (flattened
+        origin/destination, company, and full-route "from" price), cached for 30 s.
 
         **Staff (org scope)** — returns a paginated management list for their org.
         Supports filtering by `route_id`, `status`, `driver_id`, `from`/`to`, and
@@ -930,21 +978,21 @@ paths:
         **Platform-admin** — same as staff but across all orgs; filter by `org_id` as needed.
       parameters:
         - in: query
-          name: boarding_stop_id
-          schema: { type: string, format: uuid }
-          description: '**Passenger search only.** UUID of the boarding stop.'
+          name: q
+          schema: { type: string }
+          description: '**Passenger search only.** Free-text match on route name or origin/destination name.'
         - in: query
-          name: alighting_stop_id
+          name: origin_id
           schema: { type: string, format: uuid }
-          description: '**Passenger search only.** UUID of the alighting stop.'
+          description: '**Passenger search only.** Filter to routes starting at this origin stop.'
+        - in: query
+          name: company_id
+          schema: { type: string, format: uuid }
+          description: '**Passenger search only.** Filter to a single transport operator (org).'
         - in: query
           name: date
           schema: { type: string, format: date }
-          description: '**Passenger search only.** Departure date (YYYY-MM-DD, local time).'
-        - in: query
-          name: seats
-          schema: { type: integer, default: 1 }
-          description: '**Passenger search only.** Minimum available seats required.'
+          description: '**Passenger search only.** Departure date (YYYY-MM-DD, Kigali local time). Defaults to upcoming trips when omitted.'
         - in: query
           name: org_id
           schema: { type: string, format: uuid }
@@ -968,10 +1016,14 @@ paths:
         - $ref: '#/components/parameters/QueryLimit'
       responses:
         '200':
-          description: Trip list or search results
+          description: |
+            Passenger search returns `PaginatedTripSearch`; staff/admin list returns `PaginatedTrips`.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/PaginatedTrips' }
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/PaginatedTripSearch'
+                  - $ref: '#/components/schemas/PaginatedTrips'
 
     post:
       tags: [Trips]

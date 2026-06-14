@@ -15,7 +15,11 @@ export const create = async (req: Request, res: Response, next: NextFunction): P
 export const list = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const stops = await stopsService.listStops(actingOrg(req), req.query['q'] as string | undefined);
-    res.status(200).json({ stops });
+    // Public autocomplete payload — expose only the locating fields, not the
+    // copy-on-write internals (org_id/override_of/is_hidden/timestamps).
+    const data = stops.map((s) => ({ id: s.id, name: s.name, lat: Number(s.lat), lng: Number(s.lng) }));
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    res.status(200).json({ data });
   } catch (err) { next(err); }
 };
 

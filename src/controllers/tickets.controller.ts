@@ -21,64 +21,83 @@ export const book = async (req: Request, res: Response, next: NextFunction): Pro
     };
 
     const seatsCount = body.seats_count ?? 1;
+    const method = body.payment_method;
 
-    // Cash — staff walk-in sale. Requires an authenticated caller with create:Ticket.
-    if (body.payment_method === 'cash') {
-      if (!user) return next(new AppError('UNAUTHENTICATED', 401));
-      if (!buildAbilityFromRules(user.rules).can('create', 'Ticket')) return next(new AppError('FORBIDDEN', 403));
-      if (!body.passenger_name) return next(new AppError('VALIDATION_ERROR', 422, 'passenger_name required for cash ticket'));
-      const result = await ticketsService.bookCashTicket(user, {
-        trip_id: body.trip_id,
-        boarding_stop_id: body.boarding_stop_id,
-        alighting_stop_id: body.alighting_stop_id,
-        seats_count: seatsCount,
-        passenger_name: body.passenger_name,
-        passenger_phone: body.phone,
-      });
-      res.status(202).json(result);
-      return;
-    }
+    // Who's calling determines which payment methods are allowed:
+    //   • unauthenticated passenger  → mtn | airtel (mobile money only)
+    //   • authenticated passenger    → wallet only (real money needs a sudo step-up)
+    //   • authenticated org agent    → cash | mtn | airtel walk-in sale on a customer's behalf
+    // cash is never customer-driven — only an agent (create:Ticket) can record it.
+    const isAgent = !!user && buildAbilityFromRules(user.rules).can('create', 'Ticket');
 
-    // Wallet — authenticated purchase. An authenticated passenger omitting
-    // payment_method defaults here for back-compat; otherwise it must be explicit.
-    const method = body.payment_method ?? (user?.user_type === 'passenger' ? 'wallet' : undefined);
-
-    if (method === 'wallet') {
-      if (!user) return next(new AppError('UNAUTHENTICATED', 401));
-      // Passengers must step up — spending real wallet money requires a fresh
-      // password re-auth (≤3 min, single-use sudo token).
-      if (user.user_type === 'passenger') {
-        await consumeSudoToken(
-          req.headers['x-sudo-token'] as string | undefined,
-          user.id,
-          'purchase_ticket',
-          getRedisClient(),
-        );
+    // mtn | airtel — mobile money. Shared by the anonymous-passenger self-service flow
+    // and the agent walk-in flow; the provider is verified from the phone number.
+    const bookMomo = async () => {
+      if (!body.phone || !body.passenger_name) {
+        return next(new AppError('VALIDATION_ERROR', 422, 'phone and passenger_name required for mobile-money booking'));
       }
-      // The account already holds a verified phone, so we never force it in the
-      // request. (Wiring that phone onto the ticket for the confirmation SMS is TODO.)
-      const result = await ticketsService.bookWalletTicket(user, {
+      const result = await ticketsService.bookMomoTicket({
         trip_id: body.trip_id,
         boarding_stop_id: body.boarding_stop_id,
         alighting_stop_id: body.alighting_stop_id,
         seats_count: seatsCount,
+        phone: body.phone,
+        passenger_name: body.passenger_name,
       });
       res.status(202).json(result);
+    };
+
+    // ── Unauthenticated passenger — mobile money only ───────────────────────────────
+    if (!user) {
+      if (method && method !== 'mtn' && method !== 'airtel') {
+        return next(new AppError('VALIDATION_ERROR', 422, 'guests can only pay by mobile money (mtn or airtel)'));
+      }
+      await bookMomo();
       return;
     }
 
-    // mtn | airtel — mobile money (guest or passenger); the provider is verified
-    // from the phone number.
-    if (!body.phone || !body.passenger_name) {
-      return next(new AppError('VALIDATION_ERROR', 422, 'phone and passenger_name required for mobile-money booking'));
+    // ── Authenticated org agent — walk-in sale (cash or mobile money) ───────────────
+    if (isAgent) {
+      if (method === 'cash') {
+        if (!body.passenger_name) return next(new AppError('VALIDATION_ERROR', 422, 'passenger_name required for cash ticket'));
+        const result = await ticketsService.bookCashTicket(user, {
+          trip_id: body.trip_id,
+          boarding_stop_id: body.boarding_stop_id,
+          alighting_stop_id: body.alighting_stop_id,
+          seats_count: seatsCount,
+          passenger_name: body.passenger_name,
+          passenger_phone: body.phone,
+        });
+        res.status(202).json(result);
+        return;
+      }
+      if (method === 'mtn' || method === 'airtel') {
+        await bookMomo();
+        return;
+      }
+      return next(new AppError('VALIDATION_ERROR', 422, 'agents must specify payment_method: cash, mtn, or airtel'));
     }
-    const result = await ticketsService.bookMomoTicket({
+
+    // ── Authenticated passenger — wallet only ───────────────────────────────────────
+    // A passenger may omit payment_method (defaults to wallet); any other explicit
+    // method is rejected so customers can't pay cash or route their own momo.
+    if (method && method !== 'wallet') {
+      return next(new AppError('VALIDATION_ERROR', 422, 'logged-in passengers pay with their wallet'));
+    }
+    // Spending real wallet money requires a fresh password re-auth (≤3 min, single-use).
+    await consumeSudoToken(
+      req.headers['x-sudo-token'] as string | undefined,
+      user.id,
+      'purchase_ticket',
+      getRedisClient(),
+    );
+    // The account already holds a verified phone, so we never force it in the request.
+    // (Wiring that phone onto the ticket for the confirmation SMS is TODO.)
+    const result = await ticketsService.bookWalletTicket(user, {
       trip_id: body.trip_id,
       boarding_stop_id: body.boarding_stop_id,
       alighting_stop_id: body.alighting_stop_id,
       seats_count: seatsCount,
-      phone: body.phone,
-      passenger_name: body.passenger_name,
     });
     res.status(202).json(result);
   } catch (err) { next(err); }

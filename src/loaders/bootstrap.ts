@@ -78,16 +78,14 @@ export const bootstrap = async (): Promise<BootstrapResult> => {
           data: { id: randomUUID(), org_id: null, name: r.name, slug, origin_stop_id, destination_stop_id },
         });
 
-    for (let i = 0; i < r.stops.length; i++) {
-      await prisma.routeStop.upsert({
-        where: { route_id_order: { route_id: route.id, order: i + 1 } },
-        create: { id: randomUUID(), route_id: route.id, stop_id: stopId[r.stops[i]], order: i + 1 },
-        update: { stop_id: stopId[r.stops[i]] },
-      });
-    }
-    // Prune any route_stops beyond the current length (a route that was shortened) —
-    // upsert alone never removes them.
-    await prisma.routeStop.deleteMany({ where: { route_id: route.id, order: { gt: r.stops.length } } });
+    // Replace the route's stops wholesale. Upserting by (route_id, order) collides
+    // with the (route_id, stop_id) unique when a stop moves position (reordered or
+    // a route shortened). route_stops are not referenced by trips/tickets, so a
+    // delete + recreate is safe and idempotent.
+    await prisma.routeStop.deleteMany({ where: { route_id: route.id } });
+    await prisma.routeStop.createMany({
+      data: r.stops.map((name, i) => ({ id: randomUUID(), route_id: route.id, stop_id: stopId[name], order: i + 1 })),
+    });
 
     routes.push({ name: r.name, id: route.id, durationMin: routeDurationMin(r.stops) });
   }

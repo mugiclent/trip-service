@@ -98,7 +98,12 @@ const handlePaymentConfirmed = async (event: PaymentConfirmed): Promise<void> =>
     user_id: ticket.user_id,
   });
 
-  if (ticket.passenger_phone) {
+  // Confirmation SMS only for passenger-initiated bookings (wallet, mtn, airtel).
+  // Cash is operator-initiated at the counter — the passenger isn't notified even
+  // though we keep their phone on the ticket.
+  const passengerInitiated = ticket.payment_method !== 'cash';
+
+  if (passengerInitiated && ticket.passenger_phone) {
     await smsCoordQueue.add(
       'send-ticket-sms',
       {

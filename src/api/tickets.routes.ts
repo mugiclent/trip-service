@@ -24,7 +24,7 @@ const cashSchema = Joi.object({
   alighting_stop_id: Joi.string().uuid().required(),
   seats_count: Joi.number().integer().min(1).default(1),
   passenger_name: Joi.string().max(255).required(),
-  passenger_phone: Joi.string().max(20).optional(),
+  passenger_phone: Joi.string().max(20).required(),
 });
 
 const cancelSchema = Joi.object({

@@ -34,6 +34,10 @@ export const book = async (req: Request, res: Response, next: NextFunction): Pro
         );
       }
 
+      // Wallet is the authenticated-passenger path: their account already holds a
+      // verified phone, so we never force it in the request. (Wiring that account
+      // phone onto the ticket — needed for the confirmation SMS — is still TODO;
+      // until then wallet tickets carry no phone and send no SMS.)
       const result = await ticketsService.bookWalletTicket(user, {
         trip_id: body.trip_id,
         boarding_stop_id: body.boarding_stop_id,

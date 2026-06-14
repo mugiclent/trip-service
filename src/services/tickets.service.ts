@@ -123,6 +123,7 @@ export const bookWalletTicket = async (
 
   publishPaymentRequested({
     ticket_id: ticket.id,
+    trip_id: data.trip_id,
     org_id: trip.org_id,
     payment_method: 'wallet',
     ticket_price: price.amount,
@@ -191,6 +192,7 @@ export const bookMomoTicket = async (data: {
 
   publishPaymentRequested({
     ticket_id: ticket.id,
+    trip_id: data.trip_id,
     org_id: trip.org_id,
     payment_method: network,
     ticket_price: price.amount,
@@ -257,6 +259,7 @@ export const bookCashTicket = async (
 
   publishPaymentRequested({
     ticket_id: ticket.id,
+    trip_id: data.trip_id,
     org_id: trip.org_id,
     payment_method: 'cash',
     ticket_price: price.amount,
@@ -334,7 +337,7 @@ export const cancelTicket = async (user: AuthenticatedUser, id: string, reason?:
   if (ticket.payment_method !== 'cash') {
     publishRefundRequested({
       ticket_id: ticket.id,
-      payment_ref: ticket.payment_ref,
+      original_payment_ref: ticket.payment_ref,
       ticket_price: ticket.ticket_price,
       user_id: ticket.user_id,
       phone: ticket.passenger_phone,

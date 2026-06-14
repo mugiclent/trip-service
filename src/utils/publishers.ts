@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getRabbitMQChannel } from '../loaders/rabbitmq.js';
+import type { PaymentMethod } from '../contracts/payment.js';
 
 const publish = (
   exchange: string,
@@ -77,8 +78,9 @@ export const publishTripEvent = (event: TripEvent): void =>
 
 export interface PaymentRequestedEvent {
   ticket_id: string;
+  trip_id: string;
   org_id: string;
-  payment_method: 'cash' | 'wallet' | 'mtn' | 'airtel';
+  payment_method: PaymentMethod;
   ticket_price: number;
   user_id: string | null;
   phone: string | null;
@@ -95,16 +97,22 @@ export const publishPaymentRequested = (
 
 export interface RefundRequestedEvent {
   ticket_id: string;
-  payment_ref: string;
+  // The original ticket payment to reverse. payment-service keys the refund's own ledger
+  // row on a fresh `payment_ref` (minted below) and locates the original by this field.
+  original_payment_ref: string;
   ticket_price: number;
   user_id: string | null;
   phone: string | null;
-  payment_method: 'cash' | 'wallet' | 'mtn' | 'airtel';
+  payment_method: PaymentMethod;
   reason: string;
 }
 
 export const publishRefundRequested = (event: RefundRequestedEvent): void =>
-  publish('trips', 'ticket.events', { type: 'refund.requested', ...event });
+  publish('trips', 'ticket.events', {
+    type: 'refund.requested',
+    payment_ref: randomUUID(), // idempotency key for the refund transaction itself
+    ...event,
+  });
 
 // ---------------------------------------------------------------------------
 // Ticket confirmed — trips exchange (fanout: billing + tax services)

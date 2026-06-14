@@ -385,7 +385,7 @@ const cancelOneTrip = async (
     });
     publishRefundRequested({
       ticket_id: tk.id,
-      payment_ref: tk.payment_ref,
+      original_payment_ref: tk.payment_ref,
       ticket_price: tk.ticket_price,
       user_id: tk.user_id,
       phone: tk.passenger_phone,

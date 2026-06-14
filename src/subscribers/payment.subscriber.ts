@@ -4,6 +4,8 @@ import { prisma } from '../models/index.js';
 import { seatHoldQueue, smsCoordQueue, smsReminderQueue } from '../loaders/bullmq.js';
 import { publishRefundRequested, publishTicketConfirmed } from '../utils/publishers.js';
 import { bookingStatusKey, BOOKING_STATUS_TTL } from '../utils/booking-status.js';
+import { translatePaymentConfirmed, translatePaymentFailed } from '../contracts/payment.js';
+import type { PaymentConfirmed, PaymentFailed } from '../contracts/payment.js';
 
 // Deliver a terminal booking outcome to the SSE stream: persist it (so a client that
 // connects/reconnects within the payment window replays it — fixes the lost-event race)
@@ -15,25 +17,9 @@ const emitBookingOutcome = async (ticketId: string, payload: object): Promise<vo
   await redis.publish(`booking:${ticketId}`, body);
 };
 
-// Shapes as emitted by payment-service: camelCase, dispatched by AMQP routing
-// key (no `type` field in the body).
-interface PaymentConfirmedEvent {
-  ticketId: string;
-  paymentRef?: string;
-}
-
-interface PaymentFailedEvent {
-  ticketId: string;
-  reason: string;
-  retryable: boolean;
-  available?: number;
-  required?: number;
-  shortfall?: number;
-}
-
-const handlePaymentConfirmed = async (event: PaymentConfirmedEvent): Promise<void> => {
+const handlePaymentConfirmed = async (event: PaymentConfirmed): Promise<void> => {
   const ticket = await prisma.ticket.findUnique({
-    where: { id: event.ticketId },
+    where: { id: event.ticket_id },
     include: {
       trip: {
         include: {
@@ -51,7 +37,7 @@ const handlePaymentConfirmed = async (event: PaymentConfirmedEvent): Promise<voi
   if (['expired', 'failed', 'cancelled'].includes(ticket.status)) {
     publishRefundRequested({
       ticket_id: ticket.id,
-      payment_ref: ticket.payment_ref,
+      original_payment_ref: ticket.payment_ref,
       ticket_price: ticket.ticket_price,
       user_id: ticket.user_id,
       phone: ticket.passenger_phone,
@@ -63,7 +49,8 @@ const handlePaymentConfirmed = async (event: PaymentConfirmedEvent): Promise<voi
 
   if (ticket.status !== 'payment_pending') return;
 
-  const confirmedAt = new Date();
+  // Use payment-service's authoritative settlement time, not our local clock.
+  const confirmedAt = new Date(event.confirmed_at);
 
   await prisma.ticket.update({
     where: { id: ticket.id },
@@ -154,13 +141,13 @@ const handlePaymentConfirmed = async (event: PaymentConfirmedEvent): Promise<voi
   }
 };
 
-const handlePaymentFailed = async (event: PaymentFailedEvent): Promise<void> => {
-  const ticket = await prisma.ticket.findUnique({ where: { id: event.ticketId } });
+const handlePaymentFailed = async (event: PaymentFailed): Promise<void> => {
+  const ticket = await prisma.ticket.findUnique({ where: { id: event.ticket_id } });
   if (!ticket || ticket.status !== 'payment_pending') return;
 
   await prisma.$transaction([
     prisma.ticket.update({
-      where: { id: event.ticketId },
+      where: { id: event.ticket_id },
       data: { status: 'failed' },
     }),
     prisma.trip.update({
@@ -169,14 +156,13 @@ const handlePaymentFailed = async (event: PaymentFailedEvent): Promise<void> => 
     }),
   ]);
 
-  const job = await seatHoldQueue.getJob(`seat-hold-${event.ticketId}`);
+  const job = await seatHoldQueue.getJob(`seat-hold-${event.ticket_id}`);
   if (job) await job.remove();
 
-  await emitBookingOutcome(event.ticketId, {
+  await emitBookingOutcome(event.ticket_id, {
     status: 'failed',
     reason: event.reason,
     retryable: event.retryable,
-    ...(event.available !== undefined ? { available: event.available, required: event.required, shortfall: event.shortfall } : {}),
   });
 };
 
@@ -189,9 +175,9 @@ export const initPaymentSubscriber = async (ch: Channel): Promise<void> => {
 
     try {
       if (routingKey === 'payment.confirmed') {
-        await handlePaymentConfirmed(JSON.parse(msg.content.toString()) as PaymentConfirmedEvent);
+        await handlePaymentConfirmed(translatePaymentConfirmed(JSON.parse(msg.content.toString())));
       } else if (routingKey === 'payment.failed') {
-        await handlePaymentFailed(JSON.parse(msg.content.toString()) as PaymentFailedEvent);
+        await handlePaymentFailed(translatePaymentFailed(JSON.parse(msg.content.toString())));
       }
       // topup.* and wallet.events are for user-service; ignore here.
 

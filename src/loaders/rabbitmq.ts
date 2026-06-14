@@ -33,17 +33,15 @@ const setupChannels = async (): Promise<void> => {
   // Backpressure: at most one unacked message in flight while a handler runs.
   await consumerChannel.prefetch(1);
 
-  // Broker-owned exchanges (defined in rabbitmq/config/definitions.json) are checkExchange'd
-  // so a missing one fails fast instead of being silently re-declared with wrong parameters.
-  // `trips` is also broker-defined but we own it and publish to it, so we assert (idempotent
-  // with matching params). `tax` is NOT broker-defined and no other service declares it, so
-  // trip-service is its de-facto owner and must assert it.
-  await publishChannel.assertExchange('trips', 'topic', { durable: true });
+  // All exchanges are broker-owned (defined in rabbitmq/config/definitions.json).
+  // checkExchange throws fast if one is absent rather than silently re-declaring
+  // it with potentially wrong parameters.
+  await publishChannel.checkExchange('trips');
   await publishChannel.checkExchange('logs');
   await publishChannel.checkExchange('notifications');
   await consumerChannel.checkExchange('users');
   await consumerChannel.checkExchange('payment');
-  await consumerChannel.assertExchange('tax', 'topic', { durable: true });
+  await consumerChannel.checkExchange('tax');
 
   await consumerChannel.assertQueue('users-trip-svc', {
     durable: true,

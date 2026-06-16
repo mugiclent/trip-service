@@ -29,6 +29,10 @@ export interface AuthenticatedUser {
   role_slugs: string[];
   rules: AppRule[];
   locale: string;
+  // Verified account phone (E.164) forwarded by the api-gw as `x-user-phone`.
+  // Null when the account has no phone on file. Used to address the confirmation
+  // SMS for wallet bookings, which carry no phone in the request body.
+  phone: string | null;
 }
 
 export const buildAbilityFromRules = (rules: AppRule[]): AppAbility =>

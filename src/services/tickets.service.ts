@@ -18,18 +18,22 @@ const MOMO_TTL_MS = 180_000;
 // window, so the key is live exactly while the ticket can be pending. Best-effort: if
 // this write fails the booking still succeeds, but its live stream will 404 until the
 // payment outcome is known — the client just polls the REST endpoint instead.
-const cacheBookingMeta = (
+const cacheBookingMeta = async (
   ticket: { id: string; user_id: string | null; payment_method: string },
   ttlSeconds: number,
-): void => {
-  void getRedisClient()
-    .set(
+): Promise<void> => {
+  // Awaited (not fire-and-forget) so the key is in place before we return 202 — otherwise a
+  // client that opens the stream immediately can race the write and 404 its own live booking.
+  // Still best-effort: a Redis failure must not fail the booking, so swallow and let the
+  // client fall back to polling the REST endpoint.
+  try {
+    await getRedisClient().set(
       bookingMetaKey(ticket.id),
       JSON.stringify({ user_id: ticket.user_id, payment_method: ticket.payment_method }),
       'EX',
       ttlSeconds,
-    )
-    .catch(() => {});
+    );
+  } catch { /* best-effort — stream will 404, REST still serves the ticket */ }
 };
 
 const ticketWithDetails = {
@@ -101,6 +105,10 @@ export const bookWalletTicket = async (
         trip_id: data.trip_id,
         user_id: user.id,
         passenger_name: user.id,
+        // Verified account phone (forwarded by the gateway as x-user-phone). Stored so
+        // the confirmation SMS and any later refund can reach the passenger — a wallet
+        // booking carries no phone in the request body.
+        passenger_phone: user.phone,
         boarding_stop_id: data.boarding_stop_id,
         alighting_stop_id: data.alighting_stop_id,
         seats_count: data.seats_count,
@@ -113,7 +121,7 @@ export const bookWalletTicket = async (
     });
   });
 
-  cacheBookingMeta(ticket, WALLET_TTL_MS / 1000);
+  await cacheBookingMeta(ticket, WALLET_TTL_MS / 1000);
 
   await seatHoldQueue.add(
     'expire-seat-hold',
@@ -128,7 +136,7 @@ export const bookWalletTicket = async (
     payment_method: 'wallet',
     ticket_price: price.amount,
     user_id: user.id,
-    phone: null,
+    phone: user.phone,
     payment_ref: ticket.payment_ref,
   }, WALLET_TTL_MS);
 
@@ -182,7 +190,7 @@ export const bookMomoTicket = async (data: {
     });
   });
 
-  cacheBookingMeta(ticket, MOMO_TTL_MS / 1000);
+  await cacheBookingMeta(ticket, MOMO_TTL_MS / 1000);
 
   await seatHoldQueue.add(
     'expire-seat-hold',
@@ -249,7 +257,7 @@ export const bookCashTicket = async (
     });
   });
 
-  cacheBookingMeta(ticket, WALLET_TTL_MS / 1000);
+  await cacheBookingMeta(ticket, WALLET_TTL_MS / 1000);
 
   await seatHoldQueue.add(
     'expire-seat-hold',

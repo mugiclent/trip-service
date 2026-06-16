@@ -91,8 +91,9 @@ export const book = async (req: Request, res: Response, next: NextFunction): Pro
       'purchase_ticket',
       getRedisClient(),
     );
-    // The account already holds a verified phone, so we never force it in the request.
-    // (Wiring that phone onto the ticket for the confirmation SMS is TODO.)
+    // The account already holds a verified phone (forwarded by the gateway as
+    // x-user-phone and carried on `user.phone`), so we never force it in the request.
+    // bookWalletTicket wires it onto the ticket for the confirmation SMS.
     const result = await ticketsService.bookWalletTicket(user, {
       trip_id: body.trip_id,
       boarding_stop_id: body.boarding_stop_id,

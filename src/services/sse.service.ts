@@ -43,8 +43,9 @@ export const streamTicketStatus = async (
   };
 
   const subscriber = createRedisConnection();
-  const isWallet = meta.payment_method === 'wallet' || meta.payment_method === 'cash';
-  const timeoutMs = isWallet ? 30_000 : 180_000;
+  // wallet and cash settle fast (30s window); mobile money needs the longer USSD window (180s).
+  const isShortWindow = meta.payment_method === 'wallet' || meta.payment_method === 'cash';
+  const timeoutMs = isShortWindow ? 30_000 : 180_000;
 
   let done = false;
   let cleanedUp = false;

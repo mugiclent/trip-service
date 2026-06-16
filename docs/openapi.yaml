@@ -204,14 +204,54 @@ tags:
 
   - name: Analytics
     description: |
-      Aggregate dashboard metrics about tickets sold and revenue. Requires `read` on `Report`.
-      Scope is derived from the caller's rules: **platform-admin** sees all operators (optionally
-      narrowed by `org_id`); **org staff** are pinned to their own org.
+      Aggregate dashboard metrics about tickets sold and revenue, served entirely from
+      trip-service's own tables (no cross-service calls — revenue lives on the ticket itself).
 
-      Revenue and "sold" count only `confirmed` tickets, timed by `confirmed_at`; peak times use
-      `created_at` (booking demand). All period boundaries and hour/day buckets are computed in the
-      requested `tz`. Results are cached ~45s. The transaction list itself is the existing
-      `GET /tickets` endpoint — analytics returns only the aggregates.
+      ## Who can call it & what they see
+
+      Gated by `read` on `Report`. The **same rule** decides both *access* and *scope* — access is
+      "do you have the rule at all", scope is the *shape* of that rule's conditions:
+
+      | Role | Report grant | Access | Data scope |
+      |---|---|---|---|
+      | Platform Admin | `*:*:platform` (manage all) | ✅ | **All operators**; may pass `org_id` to focus one |
+      | Org Admin | `report:*:org` | ✅ | **Own org only** (`org_id` ignored) |
+      | Station Manager | `report:read:org` | ✅ | **Own org only** |
+      | Cashier / Driver / Passenger | none | ❌ `403` | — |
+
+      A platform rule has no conditions → platform scope. An org rule bakes `{ org_id }` →
+      the query is pinned to the caller's own org, and any `org_id` query param is ignored so a
+      caller can never read another operator's numbers.
+
+      ## How the numbers are computed
+
+      - **Sold tickets & revenue** count **only `confirmed`** tickets, timed by **`confirmed_at`**
+        (when the money settled). Revenue = `SUM(ticket_price)` (RWF; tickets carry no currency
+        column — the platform prices in RWF).
+      - **Capacity** (`total_seats` / `available`) is summed from **trips whose `departure_at`**
+        falls in the window — i.e. the seats operating in that period, not ticket counts.
+      - **`delta_pct`** compares the current window to the **immediately preceding equal-length
+        window** (today vs yesterday, this_week vs the week before, custom vs the same span just
+        before `from`). `prev = 0, cur > 0 ⇒ +100`. Omitted entirely when `compare=false`.
+      - **`revenue_by_route`** groups confirmed revenue by the trip's route; `pct` is each route's
+        share of `revenue_total`. **`top_destinations`** is the same rows re-ranked by confirmed
+        ticket **count**, top 5.
+      - **`peak_times`** reflects **booking demand**, so it buckets by **`created_at`** (when the
+        booking was made), not settlement. `peak=hour` → hour-of-day `0–23`; `peak=day` → ISO
+        weekday `1` (Mon) – `7` (Sun). Confirmed tickets only.
+
+      ## Time zones
+
+      Every boundary and bucket is computed in the requested **`tz`** (IANA, default
+      `Africa/Kigali`), so "today"/week/month and the hour/day histograms reflect operator-local
+      time even though timestamps are stored in UTC. An unknown zone returns `422 INVALID_TIMEZONE`.
+
+      ## Performance & related endpoints
+
+      Pure aggregation over indexed `tickets`/`trips`/`routes`; the assembled payload is cached in
+      Redis for ~45 s, so the live-polling dashboard hits cache, not Postgres. This endpoint returns
+      **only the aggregates** — the "pending/completed transactions" list is the existing
+      `GET /tickets` (it already supports `status`, date, and pagination filters).
 
 components:
 

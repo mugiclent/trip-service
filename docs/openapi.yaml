@@ -234,6 +234,18 @@ components:
       required: true
       schema: { type: string, format: uuid }
 
+    SudoToken:
+      in: header
+      name: x-sudo-token
+      required: false
+      schema: { type: string }
+      description: |
+        **Required for `wallet` bookings** by an authenticated passenger. A single-use,
+        action-scoped step-up token (JWT, ≤3 min) obtained from user-service's
+        `POST /api/v1/users/me/validate-password` (action `purchase_ticket`). Forwarded
+        unchanged by the api-gw. Omit for `mtn`/`airtel`/`cash`. Missing or invalid →
+        `403` (`STEP_UP_REQUIRED`, `STEP_UP_EXPIRED`, `STEP_UP_INVALID`, `STEP_UP_ALREADY_USED`).
+
     QueryPage:
       in: query
       name: page
@@ -1893,6 +1905,8 @@ paths:
 
         All flows return `202 Accepted` with a `ticket_id`; open `GET /tickets/{id}/stream`
         to receive the payment confirmation.
+      parameters:
+        - $ref: '#/components/parameters/SudoToken'
       requestBody:
         required: true
         content:
@@ -1934,7 +1948,14 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '402': { description: Insufficient wallet balance }
-        '403': { description: Forbidden (cash without create:Ticket) }
+        '403':
+          description: |
+            Forbidden — either a missing/invalid wallet step-up token
+            (`STEP_UP_REQUIRED`, `STEP_UP_EXPIRED`, `STEP_UP_INVALID`, `STEP_UP_ALREADY_USED`)
+            or `cash` requested without `create:Ticket`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '404':
           description: Trip or price not found (`PRICE_NOT_FOUND`)
           content:

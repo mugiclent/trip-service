@@ -13,6 +13,7 @@ import busesRouter from '../api/buses.routes.js';
 import tripsRouter from '../api/trips.routes.js';
 import ticketsRouter from '../api/tickets.routes.js';
 import driverRouter from '../api/driver.routes.js';
+import analyticsRouter from '../api/analytics.routes.js';
 import { errorHandler } from '../middleware/errorHandler.js';
 
 export const buildApp = (): Application => {
@@ -56,6 +57,7 @@ export const buildApp = (): Application => {
   app.use('/api/v1/trips', tripsRouter);
   app.use('/api/v1/tickets', ticketsRouter);
   app.use('/api/v1/driver', driverRouter);
+  app.use('/api/v1/analytics', analyticsRouter);
 
   app.use(errorHandler);
 

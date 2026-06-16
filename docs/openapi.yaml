@@ -202,6 +202,17 @@ tags:
       These endpoints scope results automatically to the authenticated driver's assigned trips —
       no filter parameters needed.
 
+  - name: Analytics
+    description: |
+      Aggregate dashboard metrics about tickets sold and revenue. Requires `read` on `Report`.
+      Scope is derived from the caller's rules: **platform-admin** sees all operators (optionally
+      narrowed by `org_id`); **org staff** are pinned to their own org.
+
+      Revenue and "sold" count only `confirmed` tickets, timed by `confirmed_at`; peak times use
+      `created_at` (booking demand). All period boundaries and hour/day buckets are computed in the
+      requested `tz`. Results are cached ~45s. The transaction list itself is the existing
+      `GET /tickets` endpoint — analytics returns only the aggregates.
+
 components:
 
   securitySchemes:
@@ -692,7 +703,131 @@ components:
         page: { type: integer, example: 1 }
         limit: { type: integer, example: 20 }
 
+    AnalyticsOverview:
+      type: object
+      properties:
+        period:
+          type: object
+          description: The resolved window (UTC instants) and the tz used.
+          properties:
+            label: { type: string, example: today }
+            from: { type: string, format: date-time, nullable: true }
+            to: { type: string, format: date-time, nullable: true }
+            tz: { type: string, example: Africa/Kigali }
+        scope:
+          type: object
+          description: '`org_id: null` ⇒ all operators (platform-admin).'
+          properties:
+            org_id: { type: string, format: uuid, nullable: true }
+        summary:
+          type: object
+          properties:
+            sold_tickets:
+              type: object
+              properties:
+                value: { type: integer, example: 4500 }
+                delta_pct: { type: number, example: 12, description: Omitted when compare=false }
+            revenue:
+              type: object
+              properties:
+                value: { type: integer, example: 135000000 }
+                currency: { type: string, example: RWF }
+                delta_pct: { type: number, example: -2 }
+            capacity:
+              type: object
+              description: Seats on trips operating in the window.
+              properties:
+                total_seats: { type: integer, example: 845 }
+                available: { type: integer, example: 500 }
+                delta_pct: { type: number, example: 8 }
+        revenue_by_route:
+          type: array
+          items:
+            type: object
+            properties:
+              route_id: { type: string, format: uuid }
+              name: { type: string, example: 'Kigali - Musanze' }
+              amount: { type: integer, example: 843200 }
+              pct: { type: number, example: 68.4 }
+        revenue_total: { type: integer, example: 1233200 }
+        top_destinations:
+          type: array
+          description: Top 5 routes by confirmed ticket count.
+          items:
+            type: object
+            properties:
+              route_id: { type: string, format: uuid }
+              name: { type: string, example: 'Kigali - Musanze' }
+              tickets: { type: integer, example: 120 }
+        peak_times:
+          type: object
+          properties:
+            granularity: { type: string, enum: [hour, day] }
+            buckets:
+              type: array
+              description: 'For `hour`: bucket 0–23. For `day`: ISO weekday 1 (Mon)–7 (Sun).'
+              items:
+                type: object
+                properties:
+                  bucket: { type: integer, example: 18 }
+                  count: { type: integer, example: 42 }
+
 paths:
+
+  # ── Analytics ────────────────────────────────────────────────────────────────
+
+  /analytics/overview:
+    get:
+      tags: [Analytics]
+      summary: Dashboard overview
+      description: |
+        One payload powering the operator dashboard: summary cards (sold tickets, revenue,
+        seat capacity — each with a ±% delta vs the previous comparable window),
+        revenue-by-route, top destinations, and peak booking times.
+
+        Requires `read` on `Report`. Platform-admin may pass `org_id` to focus a single
+        operator; org staff are auto-scoped to their own org and `org_id` is ignored.
+      parameters:
+        - in: query
+          name: period
+          schema: { type: string, enum: [today, yesterday, this_week, this_month, custom], default: today }
+          description: Drives the date-range tabs. Use `custom` with `from`/`to`.
+        - in: query
+          name: from
+          schema: { type: string, format: date, example: '2026-06-01' }
+          description: Local start day (inclusive), `tz`-relative. Required when `period=custom`.
+        - in: query
+          name: to
+          schema: { type: string, format: date, example: '2026-06-30' }
+          description: Local end day (inclusive), `tz`-relative. Required when `period=custom`.
+        - in: query
+          name: tz
+          schema: { type: string, default: Africa/Kigali }
+          description: IANA time zone for period boundaries and hour/day buckets. `422` if unknown.
+        - in: query
+          name: org_id
+          schema: { type: string, format: uuid }
+          description: Platform-admin only — focus a single operator. Ignored for org-scoped callers.
+        - in: query
+          name: peak
+          schema: { type: string, enum: [hour, day], default: hour }
+          description: Peak-times granularity — `hour` (0–23) or `day` (ISO weekday 1–7).
+        - in: query
+          name: compare
+          schema: { type: boolean, default: true }
+          description: Include the ±% deltas vs the previous comparable window.
+      responses:
+        '200':
+          description: Dashboard metrics for the resolved window and scope
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsOverview' }
+        '403': { description: Forbidden — requires `read` on `Report` }
+        '422':
+          description: Invalid query (`VALIDATION_ERROR`) or unknown time zone (`INVALID_TIMEZONE`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   # ── Health ───────────────────────────────────────────────────────────────────
 

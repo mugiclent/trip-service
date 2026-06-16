@@ -16,6 +16,9 @@ export const validateQuery =
   (req: Request, _res: Response, next: NextFunction): void => {
     const { error, value } = schema.validate(req.query, { abortEarly: false });
     if (error) return next(new AppError('VALIDATION_ERROR', 422, error.details));
-    req.query = value as Record<string, string>;
+    // Express 5 exposes `req.query` via a getter-only accessor on the prototype, so a
+    // plain assignment throws in strict mode. Define an own data property instead to
+    // shadow it with the validated/coerced value (defaults applied, types converted).
+    Object.defineProperty(req, 'query', { value, writable: true, configurable: true, enumerable: true });
     next();
   };

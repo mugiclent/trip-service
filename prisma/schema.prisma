@@ -334,6 +334,7 @@ model Trip {
   @@index([departure_at, status])
   @@index([route_id, departure_at])
   @@index([org_id, status])
+  @@index([org_id, departure_at]) // analytics: capacity per operator over a window
   @@index([series_id])
   @@map("trips")
 }
@@ -376,5 +377,7 @@ model Ticket {
   @@index([payment_ref])
   @@index([org_id, status])
   @@index([status, expires_at])
+  @@index([org_id, status, confirmed_at]) // analytics: revenue + sold over a window
+  @@index([org_id, status, created_at])   // analytics: peak booking times over a window
   @@map("tickets")
 }

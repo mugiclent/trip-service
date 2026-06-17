@@ -10,6 +10,7 @@ export const create = async (req: Request, res: Response, next: NextFunction): P
       plate: string;
       type: string;
       capacity: number;
+      device_id?: string | null;
       driver_id?: string | null;
       route_ids?: string[];
       org_id?: string;
@@ -24,6 +25,7 @@ export const create = async (req: Request, res: Response, next: NextFunction): P
       plate: body.plate,
       type: body.type,
       capacity: body.capacity,
+      device_id: body.device_id ?? null,
       driver_id: body.driver_id ?? null,
       route_ids: body.route_ids,
     });

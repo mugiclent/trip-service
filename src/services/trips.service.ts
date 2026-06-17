@@ -1,7 +1,7 @@
 import { prisma } from '../models/index.js';
 import type { Prisma } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
-import { publishAudit } from '../utils/publishers.js';
+import { publishAudit, publishTripEvent } from '../utils/publishers.js';
 import { subject } from '@casl/ability';
 import { buildAbilityFromRules, getScopeFor, accessibleWhere } from '../utils/ability.js';
 import type { AuthenticatedUser, Subjects } from '../utils/ability.js';
@@ -541,6 +541,12 @@ export const deleteTrip = async (
   if (scope === 'this') {
     if (await hasConfirmedBookings(id)) throw new AppError('HAS_BOOKINGS', 400);
     await hardDeleteTrip(id);
+    // If the trip was live, stop telemetry tracking it (the device→trip mapping
+    // would otherwise linger until its TTL). Only 'this' scope can reach an active
+    // trip; 'future' only deletes still-scheduled instances.
+    if (trip.status === 'active') {
+      publishTripEvent({ type: 'trip.cancelled', trip_id: trip.id, org_id: trip.org_id });
+    }
     setImmediate(() => {
       publishAudit({ actor_id: user.id, action: 'delete', resource: 'Trip', resource_id: id });
     });
@@ -593,7 +599,22 @@ export const activateTrip = async (user: AuthenticatedUser, id: string) => {
   if (!trip) throw new AppError('TRIP_NOT_FOUND', 404);
   if (!buildAbilityFromRules(user.rules).can('update', subject('Trip', trip) as unknown as Subjects)) throw new AppError('FORBIDDEN', 403);
 
+  // A trip can only be tracked once activated, and telemetry needs a bus with a tracker
+  // to resolve its pings. Block activation rather than emit an event telemetry would
+  // dead-letter — every active trip is then guaranteed to be on the live map.
+  if (!trip.bus_id) throw new AppError('BUS_NOT_ASSIGNED', 400);
+  if (!trip.bus?.device_id) throw new AppError('BUS_TRACKER_REQUIRED', 400);
+
   await prisma.trip.update({ where: { id }, data: { status: 'active' } });
+
+  // Tell telemetry to start resolving this bus's pings to this trip.
+  publishTripEvent({
+    type: 'trip.activated',
+    trip_id: trip.id,
+    org_id: trip.org_id,
+    bus_id: trip.bus_id,
+    device_id: trip.bus.device_id,
+  });
 
   setImmediate(() => {
     publishAudit({ actor_id: user.id, action: 'update', resource: 'Trip', resource_id: id });
@@ -608,6 +629,9 @@ export const completeTrip = async (user: AuthenticatedUser, id: string) => {
   if (!buildAbilityFromRules(user.rules).can('update', subject('Trip', trip) as unknown as Subjects)) throw new AppError('FORBIDDEN', 403);
 
   await prisma.trip.update({ where: { id }, data: { status: 'completed' } });
+
+  // Tear down telemetry tracking for this trip.
+  publishTripEvent({ type: 'trip.completed', trip_id: trip.id, org_id: trip.org_id });
 
   setImmediate(() => {
     publishAudit({ actor_id: user.id, action: 'update', resource: 'Trip', resource_id: id });

@@ -64,7 +64,16 @@ export type TripEvent =
       reason?: string;
     }
   | {
+      // telemetry-service resolves position pings to this trip via bus_id + device_id,
+      // so both are required (events missing them are dead-lettered to trips.dlx).
       type: 'trip.activated';
+      trip_id: string;
+      org_id: string;
+      bus_id: string;
+      device_id: string;
+    }
+  | {
+      type: 'trip.completed';
       trip_id: string;
       org_id: string;
     };

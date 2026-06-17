@@ -12,6 +12,7 @@ const createSchema = Joi.object({
   plate: Joi.string().max(20).required(),
   type: Joi.string().max(100).required(),
   capacity: Joi.number().integer().min(1).required(),
+  device_id: Joi.string().max(64).allow(null).optional(), // GPS tracker id
   driver_id: Joi.string().uuid().allow(null).optional(),
   route_ids: Joi.array().items(Joi.string().uuid()).optional(),
   org_id: Joi.string().uuid().optional(), // platform scope only; ignored for org callers
@@ -21,6 +22,7 @@ const updateSchema = Joi.object({
   plate: Joi.string().max(20).optional(),
   type: Joi.string().max(100).optional(),
   capacity: Joi.number().integer().min(1).optional(),
+  device_id: Joi.string().max(64).allow(null).optional(), // null detaches the tracker
   status: Joi.string().valid('active', 'inactive').optional(),
   driver_id: Joi.string().uuid().allow(null).optional(),
   route_ids: Joi.array().items(Joi.string().uuid()).optional(),

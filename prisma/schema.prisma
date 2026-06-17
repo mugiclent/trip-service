@@ -246,6 +246,10 @@ model Bus {
   // fleet-level default, nullable so it can be cleared.
   driver_id    String?
   plate        String   @unique @db.VarChar(20)
+  // GPS tracker identifier (Traccar device_id). The telemetry-service resolves
+  // incoming position pings to a trip via this id, so it must be unique across the
+  // fleet. Nullable: a bus without a tracker simply can't run a (trackable) trip.
+  device_id    String?  @unique @db.VarChar(64)
   type         String   @db.VarChar(100)
   total_seats  Int
   is_active    Boolean  @default(true)

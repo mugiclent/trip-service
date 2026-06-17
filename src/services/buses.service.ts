@@ -17,6 +17,7 @@ const serializeBus = (bus: BusWithRelations) => ({
   id: bus.id,
   plate: bus.plate,
   type: bus.type,
+  device_id: bus.device_id,
   capacity: bus.total_seats,
   status: bus.is_active ? 'active' : 'inactive',
   driver: bus.driver
@@ -33,15 +34,14 @@ const serializeBus = (bus: BusWithRelations) => ({
   updated_at: bus.updated_at,
 });
 
-// A globally-unique plate collision surfaces as a Prisma P2002; map it to the
-// contract's specific code instead of the generic UNIQUE_CONSTRAINT_VIOLATION.
-const rethrowPlate = (err: unknown): never => {
-  if (
-    err instanceof Prisma.PrismaClientKnownRequestError &&
-    err.code === 'P2002' &&
-    (err.meta?.['target'] as string[] | undefined)?.includes('plate')
-  ) {
-    throw new AppError('PLATE_ALREADY_EXISTS', 409);
+// The plate and tracker device_id are both globally unique; a collision surfaces as a
+// Prisma P2002. Map each to its specific contract code instead of the generic
+// UNIQUE_CONSTRAINT_VIOLATION.
+const rethrowUnique = (err: unknown): never => {
+  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+    const target = err.meta?.['target'] as string[] | undefined;
+    if (target?.includes('plate')) throw new AppError('PLATE_ALREADY_EXISTS', 409);
+    if (target?.includes('device_id')) throw new AppError('DEVICE_ALREADY_EXISTS', 409);
   }
   throw err;
 };
@@ -69,6 +69,7 @@ export const createBus = async (data: {
   plate: string;
   type: string;
   capacity: number;
+  device_id?: string | null;
   driver_id?: string | null;
   route_ids?: string[];
 }) => {
@@ -82,6 +83,7 @@ export const createBus = async (data: {
         plate: data.plate,
         type: data.type,
         total_seats: data.capacity,
+        device_id: data.device_id ?? null,
         driver_id: data.driver_id ?? null,
         ...(data.route_ids?.length
           ? { routes: { connect: data.route_ids.map((id) => ({ id })) } }
@@ -91,7 +93,7 @@ export const createBus = async (data: {
     });
     return serializeBus(bus);
   } catch (err) {
-    return rethrowPlate(err);
+    return rethrowUnique(err);
   }
 };
 
@@ -107,6 +109,7 @@ const serializeBusListItem = (bus: BusListRow) => ({
   id: bus.id,
   plate: bus.plate,
   type: bus.type,
+  device_id: bus.device_id,
   capacity: bus.total_seats,
   status: bus.is_active ? 'active' : 'inactive',
   driver: bus.driver
@@ -177,6 +180,7 @@ export const updateBus = async (
     plate: string;
     type: string;
     capacity: number;
+    device_id: string | null;
     status: 'active' | 'inactive';
     driver_id: string | null;
     route_ids: string[];
@@ -191,6 +195,8 @@ export const updateBus = async (
   if (data.plate !== undefined) patch.plate = data.plate;
   if (data.type !== undefined) patch.type = data.type;
   if (data.capacity !== undefined) patch.total_seats = data.capacity;
+  // device_id is explicitly nullable — `null` detaches the tracker from the bus.
+  if ('device_id' in data) patch.device_id = data.device_id;
   if (data.status !== undefined) patch.is_active = data.status === 'active';
   if ('driver_id' in data) {
     patch.driver = data.driver_id ? { connect: { id: data.driver_id } } : { disconnect: true };
@@ -202,7 +208,7 @@ export const updateBus = async (
     const bus = await prisma.bus.update({ where: { id }, data: patch, include: busInclude });
     return serializeBus(bus);
   } catch (err) {
-    return rethrowPlate(err);
+    return rethrowUnique(err);
   }
 };
 

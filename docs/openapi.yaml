@@ -165,6 +165,41 @@ tags:
       Fleet management. Buses belong to an org and are assigned to trip instances.
       All endpoints require authentication and `read`/`create`/`update`/`delete` on `Bus`.
       Results are always scoped to the caller's org (org-admin) or all orgs (platform-admin).
+  - name: Telemetry (external service)
+    description: |
+      **These endpoints are NOT served by trip-service.** They belong to the separate
+      **telemetry-service** and are documented here only because they are the consumer
+      side of the live-tracking flow that trip-service drives. They live on a different
+      host and base path (`https://telemetry.katisha.online`, **not** `/api/v1`), and —
+      unlike every other endpoint in this spec — they bypass the api-gateway and are
+      **unauthenticated**.
+
+      ## Relationship to trip-service
+
+      trip-service owns the *lifecycle*; telemetry-service owns the *positions*. They never
+      call each other directly — the link is the `trips` RabbitMQ exchange:
+
+      ```
+      trip-service                         telemetry-service
+      ────────────                         ─────────────────
+      POST /trips/{id}/activate ──┐
+        emits trip.activated  ────┼──► trips exchange ──► maps device_id → {tripId, busId, orgId}
+        (trip_id, bus_id,         │                       (a bus's GPS pings are now accepted)
+         device_id, org_id)       │
+                                  │
+      bus GPS device  ────────────┼──────────────────► POST /  (Traccar/OsmAnd ping)
+                                  │                       accepted only while the mapping exists
+                                  │
+      map viewer  ────────────────┼──────────────────► GET /buses/{busId}/stream  (live SSE)
+                                  │
+      POST /trips/{id}/complete ──┘
+        emits trip.completed  ──────► trips exchange ──► tears the mapping down
+        (trip_id, org_id)                                (pings rejected again)
+      ```
+
+      The `device_id` carried on `trip.activated` is the bus's tracker number set via
+      `POST /buses` / `PATCH /buses/{id}` (see the Buses tag). `busId` in the telemetry
+      paths below is the same `Bus.id` from this service.
   - name: Trips
     description: |
       Trip instances represent a single scheduled departure of a bus on a route.
@@ -399,6 +434,7 @@ components:
         org_id: { type: string, format: uuid }
         plate: { type: string, example: RAB 123 A }
         type: { type: string, example: Coaster }
+        device_id: { type: string, nullable: true, maxLength: 64, example: traccar-77f3, description: 'GPS tracker (Traccar device_id) for telemetry.' }
         total_seats: { type: integer, example: 30 }
         is_active: { type: boolean, example: true }
 
@@ -409,6 +445,7 @@ components:
         id: { type: string, format: uuid, example: 'd4e5f6a7-0000-0000-0000-000000000004' }
         plate: { type: string, example: RAA 001 A }
         type: { type: string, example: Coach }
+        device_id: { type: string, nullable: true, maxLength: 64, example: traccar-77f3, description: 'GPS tracker (Traccar device_id) used by telemetry-service to resolve this bus''s position pings to its active trip. Null when no tracker is fitted; a trip cannot be activated until its bus has one.' }
         capacity: { type: integer, example: 30 }
         status: { type: string, enum: [active, inactive], example: active }
         driver:
@@ -467,6 +504,7 @@ components:
         id: { type: string, format: uuid }
         plate: { type: string, example: RAA 001 A }
         type: { type: string, example: Coach }
+        device_id: { type: string, nullable: true, maxLength: 64, example: traccar-77f3, description: 'GPS tracker (Traccar device_id); null when no tracker is fitted.' }
         capacity: { type: integer, example: 30 }
         status: { type: string, enum: [active, inactive], example: active }
         driver:
@@ -491,6 +529,28 @@ components:
         total: { type: integer, example: 8 }
         page: { type: integer, example: 1 }
         limit: { type: integer, example: 20 }
+
+    TelemetryFix:
+      type: object
+      description: |
+        A single position fix returned by **telemetry-service** (not trip-service).
+        Intentionally minimal — just enough to plot a moving marker and judge freshness.
+      properties:
+        lat: { type: number, format: double, example: -1.9378123 }
+        lon: { type: number, format: double, example: 30.0863787 }
+        ts: { type: string, format: date-time, example: '2026-06-16T19:38:49.240Z' }
+
+    TelemetryPing:
+      type: object
+      description: |
+        Position payload a bus GPS device posts to **telemetry-service** (Traccar JSON shown;
+        OsmAnd clients send the equivalent as a query string / form). `id` is the tracker's
+        `device_id` — the same value stored on `Bus.device_id` and carried on `trip.activated`.
+      properties:
+        id: { type: string, example: traccar-77f3, description: Tracker device_id. }
+        lat: { type: number, format: double, example: -1.9378123 }
+        lon: { type: number, format: double, example: 30.0863787 }
+        timestamp: { type: integer, example: 1718566729, description: Unix epoch seconds (Traccar). }
 
     Trip:
       type: object
@@ -1556,6 +1616,7 @@ paths:
                 plate: { type: string, maxLength: 20, example: RAA 001 A }
                 type: { type: string, maxLength: 100, example: Coach }
                 capacity: { type: integer, minimum: 1, example: 30 }
+                device_id: { type: string, maxLength: 64, nullable: true, example: traccar-77f3, description: 'Optional GPS tracker (Traccar device_id). Required on the bus before any of its trips can be activated.' }
                 driver_id: { type: string, format: uuid, nullable: true, description: Optional default driver. }
                 route_ids:
                   type: array
@@ -1575,7 +1636,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: Plate already exists (`PLATE_ALREADY_EXISTS`)
+          description: Plate or tracker already exists (`PLATE_ALREADY_EXISTS` / `DEVICE_ALREADY_EXISTS`)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1598,8 +1659,8 @@ paths:
       tags: [Buses]
       summary: Update bus
       description: |
-        Requires `update` on `Bus`. `driver_id: null` removes the driver; `route_ids`
-        fully replaces the assigned route set.
+        Requires `update` on `Bus`. `driver_id: null` removes the driver; `device_id: null`
+        detaches the tracker; `route_ids` fully replaces the assigned route set.
       requestBody:
         required: true
         content:
@@ -1611,6 +1672,7 @@ paths:
                 plate: { type: string, maxLength: 20 }
                 type: { type: string, maxLength: 100 }
                 capacity: { type: integer, minimum: 1 }
+                device_id: { type: string, maxLength: 64, nullable: true, description: 'GPS tracker (Traccar device_id); null detaches it.' }
                 status: { type: string, enum: [active, inactive] }
                 driver_id: { type: string, format: uuid, nullable: true }
                 route_ids:
@@ -1629,7 +1691,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: Plate already exists (`PLATE_ALREADY_EXISTS`)
+          description: Plate or tracker already exists (`PLATE_ALREADY_EXISTS` / `DEVICE_ALREADY_EXISTS`)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1664,6 +1726,81 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PaginatedBusTrips' }
         '404': { description: Not found }
+
+  # ── Telemetry (external service — telemetry-service, NOT trip-service) ─────────
+  # Documented here for convenience; served by telemetry-service on its own host
+  # (https://telemetry.katisha.online), no api-gw, unauthenticated. The per-operation
+  # `servers` override reflects that these do not share this spec's /api/v1 base path.
+
+  /:
+    post:
+      tags: [Telemetry (external service)]
+      summary: Bus device posts a position ping
+      description: |
+        **Served by telemetry-service, not trip-service.** A bus's GPS tracker pushes its
+        current position here (Traccar JSON body or OsmAnd query string / form). The ping is
+        accepted **only** while the device's `device_id` maps to an active trip — i.e. between
+        `trip.activated` and `trip.completed`/`trip.cancelled`. Always returns 2xx so the
+        device never retries a rejected fix; unmapped devices are silently dropped.
+      servers:
+        - url: https://telemetry.katisha.online
+          description: telemetry-service (direct, no api-gw)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TelemetryPing' }
+      responses:
+        '200': { description: Ping accepted (or silently dropped if the device is not on an active trip) }
+
+  /buses/{busId}/location:
+    get:
+      tags: [Telemetry (external service)]
+      summary: Latest known position for a bus
+      description: |
+        **Served by telemetry-service, not trip-service.** Returns the most recent fix for
+        the bus, or `204` if none has been received yet. `busId` is the same `Bus.id` used
+        throughout this service.
+      servers:
+        - url: https://telemetry.katisha.online
+          description: telemetry-service (direct, no api-gw)
+      parameters:
+        - in: path
+          name: busId
+          required: true
+          schema: { type: string, format: uuid }
+          description: The `Bus.id` from trip-service.
+      responses:
+        '200':
+          description: Latest fix
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TelemetryFix' }
+        '204': { description: No fix received yet }
+
+  /buses/{busId}/stream:
+    get:
+      tags: [Telemetry (external service)]
+      summary: Live position stream for a bus (SSE)
+      description: |
+        **Served by telemetry-service, not trip-service.** A Server-Sent Events stream of
+        position fixes for map viewers, primed with the latest fix on connect and then pushing
+        each new fix as it arrives. Backed by Redis pub/sub; closes when the client disconnects.
+      servers:
+        - url: https://telemetry.katisha.online
+          description: telemetry-service (direct, no api-gw)
+      parameters:
+        - in: path
+          name: busId
+          required: true
+          schema: { type: string, format: uuid }
+          description: The `Bus.id` from trip-service.
+      responses:
+        '200':
+          description: SSE stream; each event `data:` is a TelemetryFix JSON object.
+          content:
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/TelemetryFix' }
 
   # ── Trips ────────────────────────────────────────────────────────────────────
 
@@ -1935,10 +2072,16 @@ paths:
   /trips/{id}/activate:
     post:
       tags: [Trips]
-      summary: Activate trip
+      summary: Activate trip (start)
       description: |
         Transitions a `scheduled` trip to `active`. Requires `update` on `Trip`.
         Call this when the bus departs.
+
+        The trip's bus must be assigned **and** carry a `device_id` tracker — otherwise
+        the request is rejected (`BUS_NOT_ASSIGNED` / `BUS_TRACKER_REQUIRED`). On success
+        a `trip.activated` event (`trip_id`, `org_id`, `bus_id`, `device_id`) is published
+        to the `trips` exchange, which the telemetry-service uses to begin resolving the
+        bus's live position pings to this trip.
       parameters:
         - $ref: '#/components/parameters/PathId'
       responses:
@@ -1949,18 +2092,24 @@ paths:
               schema:
                 type: object
                 properties:
-                  trip: { $ref: '#/components/schemas/Trip' }
+                  id: { type: string, format: uuid }
+        '400':
+          description: Bus not assigned or has no tracker (`BUS_NOT_ASSIGNED` / `BUS_TRACKER_REQUIRED`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '403': { description: Forbidden }
         '404': { description: Not found }
-        '409': { description: Trip is not in scheduled state }
 
   /trips/{id}/complete:
     post:
       tags: [Trips]
-      summary: Complete trip
+      summary: Complete trip (stop)
       description: |
         Transitions an `active` trip to `completed`. Requires `update` on `Trip`.
-        Call this when the bus arrives at the final destination.
+        Call this when the bus arrives at the final destination. Publishes a
+        `trip.completed` event (`trip_id`, `org_id`) to the `trips` exchange, which the
+        telemetry-service uses to stop tracking the bus.
       parameters:
         - $ref: '#/components/parameters/PathId'
       responses:
@@ -1971,10 +2120,9 @@ paths:
               schema:
                 type: object
                 properties:
-                  trip: { $ref: '#/components/schemas/Trip' }
+                  id: { type: string, format: uuid }
         '403': { description: Forbidden }
         '404': { description: Not found }
-        '409': { description: Trip is not in active state }
 
   /trips/{id}/manifest:
     get:

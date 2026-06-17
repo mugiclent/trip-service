@@ -103,7 +103,6 @@ model StaffUser {
   org             Organisation? @relation(fields: [org_id], references: [id])
   trip_series     TripSeries[]
   trips           Trip[]
-  created_tickets Ticket[]
   buses           Bus[]
 
   @@index([org_id])
@@ -374,7 +373,10 @@ model Ticket {
   trip           Trip         @relation(fields: [trip_id], references: [id])
   boarding_stop  Stop         @relation("BoardingTicket", fields: [boarding_stop_id], references: [id])
   alighting_stop Stop         @relation("AlightingTicket", fields: [alighting_stop_id], references: [id])
-  dispatcher     StaffUser?   @relation(fields: [created_by], references: [id])
+  // created_by holds the dispatching staff id from the x-user-id header. Intentionally
+  // not an FK to StaffUser: the dispatcher is never read back as a relation (we only
+  // null-check it to label the ticket source), so requiring a synced mirror row would
+  // break walk-in cash sales whenever staff sync lags. See [[staff-sync]].
 
   @@index([trip_id, status])
   @@index([user_id])

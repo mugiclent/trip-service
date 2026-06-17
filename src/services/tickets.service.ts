@@ -307,8 +307,8 @@ export const listMyTickets = async (
   userId: string,
   filters: { status?: string; page?: number; limit?: number },
 ) => {
-  const page = filters.page ?? 1;
-  const limit = filters.limit ?? 20;
+  const page = Number(filters.page) || 1;
+  const limit = Number(filters.limit) || 20;
   const skip = (page - 1) * limit;
 
   const where: Prisma.TicketWhereInput = {
@@ -427,8 +427,8 @@ export const listTickets = async (
   // staff → org, platform → all. Only platform may narrow to an arbitrary org.
   const isPlatform = getScopeFor(ability, 'read', 'Ticket') === 'platform';
 
-  const page = filters.page ?? 1;
-  const limit = filters.limit ?? 20;
+  const page = Number(filters.page) || 1;
+  const limit = Number(filters.limit) || 20;
   const skip = (page - 1) * limit;
 
   const where: Prisma.TicketWhereInput = {

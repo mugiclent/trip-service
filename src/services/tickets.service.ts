@@ -104,7 +104,10 @@ export const bookWalletTicket = async (
         org_id: trip.org_id,
         trip_id: data.trip_id,
         user_id: user.id,
-        passenger_name: user.id,
+        // Wallet bookings carry no name in the body — the passenger's display name comes
+        // from the gateway (x-user-name). Fall back to the phone (never the raw user id,
+        // which would leak into the confirmation SMS and the operator manifest).
+        passenger_name: user.name ?? user.phone ?? 'Passenger',
         // Verified account phone (forwarded by the gateway as x-user-phone). Stored so
         // the confirmation SMS and any later refund can reach the passenger — a wallet
         // booking carries no phone in the request body.

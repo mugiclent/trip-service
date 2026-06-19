@@ -33,6 +33,10 @@ export interface AuthenticatedUser {
   // Null when the account has no phone on file. Used to address the confirmation
   // SMS for wallet bookings, which carry no phone in the request body.
   phone: string | null;
+  // Account display name forwarded by the api-gw as `x-user-name`. Null when the
+  // gateway omits it (e.g. account with no name on file). Used as the wallet
+  // ticket's passenger_name, which carries no name in the request body.
+  name: string | null;
 }
 
 export const buildAbilityFromRules = (rules: AppRule[]): AppAbility =>

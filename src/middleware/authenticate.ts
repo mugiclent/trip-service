@@ -12,6 +12,7 @@ export const authenticate = (req: Request, _res: Response, next: NextFunction): 
   const rules     = req.headers['x-user-rules'] as string | undefined;
   const locale    = (req.headers['x-user-locale'] as string | undefined) ?? 'rw';
   const phone     = (req.headers['x-user-phone'] as string | undefined) ?? null;
+  const name      = (req.headers['x-user-name'] as string | undefined) ?? null;
 
   if (!id) return next(new AppError('UNAUTHORIZED', 401));
 
@@ -25,6 +26,7 @@ export const authenticate = (req: Request, _res: Response, next: NextFunction): 
       rules: unpackRules(packedRules),
       locale,
       phone,
+      name,
     };
     next();
   } catch {

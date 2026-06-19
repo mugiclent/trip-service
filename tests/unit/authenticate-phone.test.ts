@@ -31,5 +31,11 @@ ok('no error on valid headers', !withPhone.err);
 const noPhone = run({ ...base });
 ok('phone defaults to null when header absent', noPhone.user?.phone === null, `(got ${String(noPhone.user?.phone)})`);
 
+const withName = run({ ...base, 'x-user-name': 'Aline Uwase' });
+ok('forwards x-user-name onto req.user.name', withName.user?.name === 'Aline Uwase', `(got ${withName.user?.name})`);
+
+const noName = run({ ...base });
+ok('name defaults to null when header absent', noName.user?.name === null, `(got ${String(noName.user?.name)})`);
+
 console.log(`\n\x1b[1mResult: ${passed} passed, ${failed} failed\x1b[0m\n`);
 process.exit(failed === 0 ? 0 : 1);

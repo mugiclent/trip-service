@@ -87,18 +87,23 @@ interface CapacityRow { seats_cur: bigint; avail_cur: bigint; seats_prev: bigint
 interface RouteRow { route_id: string; name: string; amount: bigint; tickets: bigint }
 interface PeakRow { bucket: number; count: bigint }
 
-// Reject an unknown IANA zone before it reaches Postgres (which would 500 on
-// `AT TIME ZONE 'bad'`). Intl throws RangeError for anything it doesn't recognise.
-const assertValidTz = (tz: string): void => {
+// Normalise the caller's zone to a canonical IANA name before it reaches Postgres.
+// Intl is more permissive than Postgres's `AT TIME ZONE`: it accepts abbreviations like
+// `CAT`/`EAT` that Postgres's abbreviation table does NOT carry (`CAT` → 500
+// "time zone \"CAT\" not recognized"), and it accepts them inconsistently (`EAT` happens to
+// exist in Postgres, `CAT` does not). Resolving through Intl maps whatever was sent
+// (`CAT` → `Africa/Maputo`, `EAT` → `Africa/Nairobi`) onto the canonical IANA name, which
+// Postgres always accepts — so the conversion actually applies instead of erroring out.
+// A genuinely unknown zone makes the constructor throw, which we surface as a clean 422.
+const resolveTz = (tz: string): string => {
   try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return new Intl.DateTimeFormat('en-US', { timeZone: tz }).resolvedOptions().timeZone;
   } catch {
     throw new AppError('INVALID_TIMEZONE', 422, `Unknown time zone: ${tz}`);
   }
 };
 
 const buildOverview = async (user: AuthenticatedUser, q: AnalyticsQuery) => {
-  assertValidTz(q.tz);
   const orgId = resolveOrgScope(user, q.org_id);
   const b = boundsCte(q);
   const org = (alias: string) => orgCond(alias, orgId);
@@ -189,6 +194,11 @@ const buildOverview = async (user: AuthenticatedUser, q: AnalyticsQuery) => {
 };
 
 export const getOverview = async (user: AuthenticatedUser, q: AnalyticsQuery) => {
+  // Normalise once, up front: validates the zone (422 on garbage) and canonicalises
+  // abbreviations to IANA so the cache key and SQL both use a Postgres-safe name, and so
+  // equivalent inputs (e.g. CAT ⇄ Africa/Maputo) share a cache entry.
+  q = { ...q, tz: resolveTz(q.tz) };
+
   const orgKey = getScopeFor(buildAbilityFromRules(user.rules), 'read', 'Report') === 'platform'
     ? (q.org_id ?? 'all')
     : (user.org_id ?? 'none');

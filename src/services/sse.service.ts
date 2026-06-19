@@ -47,6 +47,13 @@ export const streamTicketStatus = async (
   const isShortWindow = meta.payment_method === 'wallet' || meta.payment_method === 'cash';
   const timeoutMs = isShortWindow ? 30_000 : 180_000;
 
+  // Keep-alive heartbeat. Without it the stream can sit silent for the whole payment window
+  // (up to 180s for momo) between the initial `pending` and the terminal event; intermediate
+  // proxies cut idle upstream connections (nginx defaults to 60s), and because the response is
+  // chunked the browser then reports ERR_INCOMPLETE_CHUNKED_ENCODING. A comment line every 15s
+  // is ignored by EventSource but resets every proxy's idle timer.
+  const HEARTBEAT_MS = 15_000;
+
   let done = false;
   let cleanedUp = false;
 
@@ -54,9 +61,14 @@ export const streamTicketStatus = async (
     if (cleanedUp) return;
     cleanedUp = true;
     clearTimeout(hardTimeout);
+    clearInterval(heartbeat);
     subscriber.unsubscribe().catch(() => {});
     subscriber.quit().catch(() => {});
   };
+
+  const heartbeat = setInterval(() => {
+    if (!done) res.write(': keep-alive\n\n');
+  }, HEARTBEAT_MS);
 
   // Emit a terminal event at most once — dedupes the live pub/sub message against the
   // post-subscribe booking_status replay (whichever lands first wins; the other is ignored).
